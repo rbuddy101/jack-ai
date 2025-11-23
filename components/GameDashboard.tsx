@@ -109,30 +109,33 @@ export function GameDashboard() {
           </div>
         )}
 
-        {/* Main Content Grid */}
-        <div className="grid grid-cols-1 lg:grid-cols-2 gap-8 mb-8">
-          {/* State Machine */}
-          <div className="bg-gray-800 rounded-lg p-6 border border-gray-700">
-            <h2 className="text-xl font-semibold mb-4">Current State</h2>
-            <StateMachine currentState={status?.currentState || "IDLE"} />
-            {status?.currentGameId && (
-              <div className="mt-4 text-sm text-gray-400">
-                Game ID: {status.currentGameId.toString()}
-              </div>
-            )}
+        {/* Main Content Grid - Side by Side */}
+        <div className="grid grid-cols-1 lg:grid-cols-3 gap-8 mb-8">
+          {/* Left Column - State and Stats */}
+          <div className="lg:col-span-2 space-y-8">
+            {/* State Machine */}
+            <div className="bg-gray-800 rounded-lg p-6 border border-gray-700">
+              <h2 className="text-xl font-semibold mb-4">Current State</h2>
+              <StateMachine currentState={status?.currentState || "IDLE"} />
+              {status?.currentGameId && (
+                <div className="mt-4 text-sm text-gray-400">
+                  Game ID: {status.currentGameId.toString()}
+                </div>
+              )}
+            </div>
+
+            {/* Statistics */}
+            <div className="bg-gray-800 rounded-lg p-6 border border-gray-700">
+              <h2 className="text-xl font-semibold mb-4">Statistics</h2>
+              {status && <StatsDisplay stats={status.stats} />}
+            </div>
           </div>
 
-          {/* Statistics */}
+          {/* Right Column - Action Log */}
           <div className="bg-gray-800 rounded-lg p-6 border border-gray-700">
-            <h2 className="text-xl font-semibold mb-4">Statistics</h2>
-            {status && <StatsDisplay stats={status.stats} />}
+            <h2 className="text-xl font-semibold mb-4">Action Log</h2>
+            <ActionLog events={events} />
           </div>
-        </div>
-
-        {/* Action Log */}
-        <div className="bg-gray-800 rounded-lg p-6 border border-gray-700">
-          <h2 className="text-xl font-semibold mb-4">Action Log</h2>
-          <ActionLog events={events} />
         </div>
     </div>
   );
