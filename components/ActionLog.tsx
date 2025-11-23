@@ -43,25 +43,29 @@ export function ActionLog({ events }: ActionLogProps) {
   const formatEventData = (event: GameLoopEvent) => {
     switch (event.type) {
       case "state_change":
-        return `${event.data.from} → ${event.data.to}`;
+        const stateMsg = event.data.message || `${event.data.from} → ${event.data.to}`;
+        return stateMsg;
 
       case "initial_deal":
-        return `Player: ${event.data.playerTotal}, Dealer: ${event.data.dealerTotal}`;
+        return event.data.message || `Player: ${event.data.playerTotal}, Dealer: ${event.data.dealerTotal}`;
 
       case "decision":
-        return `${event.data.action.toUpperCase()} (Player: ${event.data.playerTotal}, Dealer: ${event.data.dealerTotal})`;
+        return event.data.message || `${event.data.action?.toUpperCase()} (Player: ${event.data.playerTotal}, Dealer: ${event.data.dealerTotal})`;
 
       case "game_complete":
-        return `${event.data.result} - ${event.data.status}`;
+        return event.data.message || `${event.data.result} - ${event.data.status}`;
 
       case "winnings_claimed":
-        return `Game ${event.data.gameId}: ${event.data.amount} wei`;
+        return event.data.message || `Game ${event.data.gameId}: ${event.data.amount} wei`;
 
       case "error":
-        return event.data.error;
+        return event.data.error || event.data.message || "Unknown error";
+
+      case "status_update":
+        return event.data.message || "Status updated";
 
       default:
-        return JSON.stringify(event.data || {});
+        return event.data.message || JSON.stringify(event.data || {});
     }
   };
 

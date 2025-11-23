@@ -48,7 +48,15 @@ class AutonomousPlayerInstance {
       console.log("✅ Game Loop initialized");
 
       // Forward events to listeners
-      this.gameLoop.on((event) => {
+      // EventEmitter emits events with (eventName, ...args) signature
+      const forwardEvent = (eventType: string, data?: any) => {
+        const event: GameLoopEvent = {
+          type: eventType,
+          state: this.gameLoop?.getState() || GameLoopState.IDLE,
+          data,
+          timestamp: Date.now(),
+        };
+        
         this.eventListeners.forEach((listener) => {
           try {
             listener(event);
@@ -56,7 +64,16 @@ class AutonomousPlayerInstance {
             console.error("Event listener error:", error);
           }
         });
-      });
+      };
+
+      // Listen to all game loop events
+      this.gameLoop.on("state_change", (data) => forwardEvent("state_change", data));
+      this.gameLoop.on("initial_deal", (data) => forwardEvent("initial_deal", data));
+      this.gameLoop.on("decision", (data) => forwardEvent("decision", data));
+      this.gameLoop.on("game_complete", (data) => forwardEvent("game_complete", data));
+      this.gameLoop.on("winnings_claimed", (data) => forwardEvent("winnings_claimed", data));
+      this.gameLoop.on("stats_update", (data) => forwardEvent("stats_update", data));
+      this.gameLoop.on("error", (data) => forwardEvent("error", data));
 
       console.log("✅ Autonomous Player ready!");
     } catch (error) {

@@ -48,6 +48,7 @@ interface UseAutonomousPlayerResult {
   error: string | null;
   startPlay: () => Promise<void>;
   stopPlay: () => Promise<void>;
+  startSimulatedPlay: () => void;
 }
 
 export function useAutonomousPlayer(): UseAutonomousPlayerResult {
@@ -58,6 +59,350 @@ export function useAutonomousPlayer(): UseAutonomousPlayerResult {
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const eventSourceRef = useRef<EventSource | null>(null);
+  const simulationTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+
+  /**
+   * Generate random card
+   */
+  const generateRandomCard = (): CardData => {
+    const ranks = ['A', '2', '3', '4', '5', '6', '7', '8', '9', '10', 'J', 'Q', 'K'];
+    const suits = ['♠', '♥', '♦', '♣'];
+    const rank = ranks[Math.floor(Math.random() * ranks.length)];
+    const suit = suits[Math.floor(Math.random() * suits.length)];
+    
+    let value: number;
+    if (rank === 'A') value = 11;
+    else if (['J', 'Q', 'K'].includes(rank)) value = 10;
+    else value = parseInt(rank);
+
+    return { rank, suit, value };
+  };
+
+  /**
+   * Calculate hand total
+   */
+  const calculateTotal = (cards: CardData[]): number => {
+    let total = cards.reduce((sum, card) => sum + card.value, 0);
+    let aces = cards.filter(card => card.rank === 'A').length;
+    
+    // Adjust for aces
+    while (total > 21 && aces > 0) {
+      total -= 10;
+      aces--;
+    }
+    
+    return total;
+  };
+
+  /**
+   * Start simulated autonomous play
+   */
+  const startSimulatedPlay = useCallback(() => {
+    console.log("🎮 Starting simulated play...");
+    
+    // Clear any existing simulation
+    if (simulationTimeoutRef.current) {
+      clearTimeout(simulationTimeoutRef.current);
+    }
+
+    // Initial state
+    setStatus({
+      isRunning: true,
+      currentState: "CHECKING_CLAIMABLE",
+      stats: status?.stats || {
+        totalGames: 0,
+        wins: 0,
+        losses: 0,
+        pushes: 0,
+        busts: 0,
+        blackjacks: 0,
+        currentStreak: 0,
+        bestWinStreak: 0,
+        worstLossStreak: 0,
+      },
+      currentGameId: BigInt(Date.now()),
+      error: null,
+    });
+
+    setEvents([{
+      type: "state_change",
+      timestamp: Date.now(),
+      data: { state: "CHECKING_CLAIMABLE", message: "Checking for claimable winnings..." }
+    }]);
+
+    let timeElapsed = 0;
+
+    // Step 1: Starting game (3s)
+    setTimeout(() => {
+      setStatus(prev => prev ? { ...prev, currentState: "STARTING_GAME" } : prev);
+      setEvents(prev => [...prev, {
+        type: "state_change",
+        timestamp: Date.now(),
+        data: { from: "CHECKING_CLAIMABLE", to: "STARTING_GAME", message: "Starting new game..." }
+      }]);
+    }, 3000);
+    timeElapsed += 3000;
+
+    // Step 2: Waiting for initial deal (8s)
+    setTimeout(() => {
+      setStatus(prev => prev ? { ...prev, currentState: "WAITING_INITIAL_DEAL" } : prev);
+      setEvents(prev => [...prev, {
+        type: "state_change",
+        timestamp: Date.now(),
+        data: { from: "STARTING_GAME", to: "WAITING_INITIAL_DEAL", message: "Waiting for VRF callback for initial deal..." }
+      }]);
+    }, timeElapsed);
+    timeElapsed += 8000;
+
+    // Step 3: Initial deal received (11s)
+    setTimeout(() => {
+      const playerCards = [generateRandomCard(), generateRandomCard()];
+      const dealerCards = [generateRandomCard(), generateRandomCard()];
+      const playerTotal = calculateTotal(playerCards);
+      const dealerTotal = calculateTotal(dealerCards);
+
+      setCurrentCards({
+        playerCards,
+        playerTotal,
+        dealerCards,
+        dealerTotal,
+      });
+
+      setStatus(prev => prev ? { ...prev, currentState: "WAITING_TRADING_PERIOD" } : prev);
+      
+      setEvents(prev => [...prev, {
+        type: "initial_deal",
+        timestamp: Date.now(),
+        data: {
+          playerCards,
+          playerTotal,
+          dealerCards,
+          dealerTotal,
+          message: `Initial deal complete! Player: ${playerTotal}, Dealer: ${dealerTotal}`
+        }
+      }]);
+    }, timeElapsed);
+    timeElapsed += 11000;
+
+    // Step 4: Playing - AI Decision
+    setTimeout(() => {
+      setStatus(prev => prev ? { ...prev, currentState: "PLAYING" } : prev);
+      setEvents(prev => [...prev, {
+        type: "state_change",
+        timestamp: Date.now(),
+        data: { from: "WAITING_TRADING_PERIOD", to: "PLAYING", message: "Trading period ended. Making decision..." }
+      }]);
+    }, timeElapsed);
+    timeElapsed += 2000;
+
+    // Step 5: First decision
+    setTimeout(() => {
+      const currentPlayerTotal = currentCards?.playerTotal || 0;
+      const currentDealerVisible = currentCards?.dealerCards[0]?.value || 0;
+      const shouldHit = currentPlayerTotal < 17;
+
+      setEvents(prev => [...prev, {
+        type: "decision",
+        timestamp: Date.now(),
+        data: {
+          action: shouldHit ? "hit" : "stand",
+          playerTotal: currentPlayerTotal,
+          dealerTotal: currentDealerVisible,
+          message: `AI decided to ${shouldHit ? "HIT" : "STAND"}`
+        }
+      }]);
+    }, timeElapsed);
+    timeElapsed += 2000;
+
+    // Step 6: Execute action (hit or stand)
+    setTimeout(() => {
+      const shouldHit = currentCards && currentCards.playerTotal < 17;
+      const newState = shouldHit ? "WAITING_HIT_VRF" : "WAITING_STAND_VRF";
+
+      setStatus(prev => prev ? {
+        ...prev,
+        currentState: newState
+      } : prev);
+
+      setEvents(prev => [...prev, {
+        type: "state_change",
+        timestamp: Date.now(),
+        data: {
+          from: "PLAYING",
+          to: newState,
+          message: `Waiting for VRF callback for ${shouldHit ? "hit" : "stand"}...`
+        }
+      }]);
+    }, timeElapsed);
+    timeElapsed += 2000;
+
+    // Step 7: VRF completes - if hit, show new card
+    setTimeout(() => {
+      const wasHit = currentCards && currentCards.playerTotal < 17;
+
+      if (wasHit && currentCards) {
+        const newCard = generateRandomCard();
+        const updatedPlayerCards = [...currentCards.playerCards, newCard];
+        const updatedPlayerTotal = calculateTotal(updatedPlayerCards);
+
+        setCurrentCards({
+          ...currentCards,
+          playerCards: updatedPlayerCards,
+          playerTotal: updatedPlayerTotal,
+        });
+
+        setEvents(prev => [...prev, {
+          type: "decision",
+          timestamp: Date.now(),
+          data: {
+            action: "card_drawn",
+            playerTotal: updatedPlayerTotal,
+            dealerTotal: currentCards.dealerCards[0]?.value || 0,
+            message: `Player drew ${newCard.rank}${newCard.suit}. New total: ${updatedPlayerTotal}`
+          }
+        }]);
+
+        // After drawing, make another decision
+        setTimeout(() => {
+          const shouldHitAgain = updatedPlayerTotal < 17 && updatedPlayerTotal <= 21;
+
+          setStatus(prev => prev ? { ...prev, currentState: "PLAYING" } : prev);
+
+          setEvents(prev => [...prev, {
+            type: "decision",
+            timestamp: Date.now(),
+            data: {
+              action: shouldHitAgain ? "hit" : "stand",
+              playerTotal: updatedPlayerTotal,
+              dealerTotal: currentCards.dealerCards[0]?.value || 0,
+              message: `AI decided to ${shouldHitAgain ? "HIT again" : "STAND"}`
+            }
+          }]);
+
+          // Final stand state
+          setTimeout(() => {
+            setStatus(prev => prev ? { ...prev, currentState: "WAITING_STAND_VRF" } : prev);
+            setEvents(prev => [...prev, {
+              type: "state_change",
+              timestamp: Date.now(),
+              data: {
+                from: "PLAYING",
+                to: "WAITING_STAND_VRF",
+                message: "Waiting for VRF callback for stand..."
+              }
+            }]);
+          }, 2000);
+        }, 3000);
+      }
+    }, timeElapsed);
+    timeElapsed += shouldHit ? 8000 : 5000; // More time if we hit
+
+    // Adjust for second decision if we hit
+    const shouldHit = currentCards && currentCards.playerTotal < 17;
+    if (shouldHit) {
+      timeElapsed += 5000; // Additional time for second decision
+    }
+
+    // Step 8: Game Complete
+    setTimeout(() => {
+      // Use a callback to get the latest cards from state
+      setCurrentCards(cards => {
+        if (!cards) return cards;
+
+        const playerTotal = cards.playerTotal;
+        const dealerTotal = cards.dealerTotal;
+
+        let result: string;
+        let gameStatus: string;
+
+        if (playerTotal > 21) {
+          result = "LOSS";
+          gameStatus = "Player busted";
+        } else if (dealerTotal > 21) {
+          result = "WIN";
+          gameStatus = "Dealer busted";
+        } else if (playerTotal > dealerTotal) {
+          result = "WIN";
+          gameStatus = "Player wins";
+        } else if (dealerTotal > playerTotal) {
+          result = "LOSS";
+          gameStatus = "Dealer wins";
+        } else {
+          result = "PUSH";
+          gameStatus = "Push";
+        }
+
+        // Update stats
+        setStatus(prev => {
+          if (!prev) return prev;
+
+          const newStats = { ...prev.stats };
+          newStats.totalGames++;
+
+          if (result === "WIN") {
+            newStats.wins++;
+            newStats.currentStreak = Math.max(0, newStats.currentStreak) + 1;
+            newStats.bestWinStreak = Math.max(newStats.bestWinStreak, newStats.currentStreak);
+          } else if (result === "LOSS") {
+            newStats.losses++;
+            if (playerTotal > 21) newStats.busts++;
+            newStats.currentStreak = Math.min(0, newStats.currentStreak) - 1;
+            newStats.worstLossStreak = Math.min(newStats.worstLossStreak, newStats.currentStreak);
+          } else {
+            newStats.pushes++;
+            newStats.currentStreak = 0;
+          }
+
+          return {
+            ...prev,
+            currentState: "GAME_COMPLETE",
+            stats: newStats,
+          };
+        });
+
+        // Save last game result
+        setLastGameResult({
+          result,
+          status: gameStatus,
+          playerCards: cards.playerCards,
+          playerTotal,
+          dealerCards: cards.dealerCards,
+          dealerTotal,
+        });
+
+        // Add completion event
+        setEvents(prev => [...prev, {
+          type: "game_complete",
+          timestamp: Date.now(),
+          data: {
+            result,
+            status: gameStatus,
+            playerCards: cards.playerCards,
+            playerTotal,
+            dealerCards: cards.dealerCards,
+            dealerTotal,
+            message: `Game complete: ${gameStatus}!`
+          }
+        }]);
+
+        // Clear current cards
+        return null;
+      });
+    }, timeElapsed);
+    timeElapsed += 5000; // 5 seconds to complete
+
+    // Step 7: Return to idle
+    simulationTimeoutRef.current = setTimeout(() => {
+      setStatus(prev => prev ? { ...prev, currentState: "IDLE", isRunning: false } : prev);
+      setEvents(prev => [...prev, {
+        type: "state_change",
+        timestamp: Date.now(),
+        data: { state: "IDLE", message: "Simulation complete!" }
+      }]);
+
+      console.log("✅ Simulated play complete");
+    }, timeElapsed);
+  }, [status, currentCards]);
 
   /**
    * Connect to SSE stream for real-time updates
@@ -250,5 +595,6 @@ export function useAutonomousPlayer(): UseAutonomousPlayerResult {
     error,
     startPlay,
     stopPlay,
+    startSimulatedPlay,
   };
 }

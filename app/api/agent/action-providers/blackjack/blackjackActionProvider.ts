@@ -212,13 +212,20 @@ export class BlackjackActionProvider extends ActionProvider<EvmWalletProvider> {
   @CreateAction({
     name: "blackjack_start_game",
     description:
-      "Start a new Blackjack game with a bet amount. IMPORTANT: Before starting a new game, check for unclaimed winnings using blackjack_check_claimable and claim them with blackjack_claim_winnings if any exist. The game will wait for VRF callback to deal initial cards. Returns the dealt cards and game state once VRF completes.",
+      "Start a new Blackjack game with a bet amount. IMPORTANT: Before starting a new game, this action will automatically check for unclaimed winnings from any previous game and reject if winnings exist. The game will wait for VRF callback to deal initial cards. Returns the dealt cards and game state once VRF completes.",
     schema: StartGameSchema,
   })
   async startGame(walletProvider: EvmWalletProvider, args: StartGameInput): Promise<string> {
+    const contractAddress = this.getContractAddress();
+    let address: string = "";
+
     try {
-      const contractAddress = this.getContractAddress();
-      const address = await walletProvider.getAddress();
+      address = await walletProvider.getAddress();
+
+      console.log("\n🎲 === Starting New Game ===");
+      console.log(`Player: ${address}`);
+      console.log(`Bet Amount: ${args.feeAmount} wei`);
+      console.log(`Contract: ${contractAddress}`);
 
       // Check for previous game and unclaimed winnings
       const gameDisplay = await walletProvider.readContract({
@@ -228,8 +235,17 @@ export class BlackjackActionProvider extends ActionProvider<EvmWalletProvider> {
         args: [address],
       }) as unknown as GameDisplay;
 
+      console.log("\n📊 === Current Game State Before Start ===");
+      console.log(`Game ID: ${gameDisplay.gameId}`);
+      console.log(`Status: "${gameDisplay.status}"`);
+      console.log(`Can Start New: ${gameDisplay.canStartNew}`);
+      console.log(`Player Cards: ${gameDisplay.playerCards.length}`);
+      console.log(`Started At: ${gameDisplay.startedAt}`);
+      console.log(`Last Action At: ${gameDisplay.lastActionAt}`);
+
       // If there's a previous game, check for unclaimed winnings
       if (gameDisplay.gameId > 0n) {
+        console.log(`\n🔍 Checking for unclaimed winnings from game #${gameDisplay.gameId}...`);
         const claimableResult = await walletProvider.readContract({
           address: contractAddress as `0x${string}`,
           abi: BlackjackAbi,
@@ -237,13 +253,47 @@ export class BlackjackActionProvider extends ActionProvider<EvmWalletProvider> {
           args: [gameDisplay.gameId, address],
         });
         const claimable = claimableResult as bigint;
+        console.log(`Claimable amount: ${claimable} wei`);
 
         if (claimable > 0n) {
           return `❌ You have unclaimed winnings from game #${gameDisplay.gameId}. Please use blackjack_claim_winnings with gameId "${gameDisplay.gameId}" before starting a new game. Claimable amount: ${claimable.toString()} tokens`;
         }
       }
 
+      // Check if we can actually start a new game
+      if (!gameDisplay.canStartNew) {
+        return `❌ Cannot start new game. Current game status: "${gameDisplay.status}". You may need to finish or cancel the current game first.`;
+      }
+
+      // Check wallet balance before attempting transaction
+      console.log("\n💰 Checking wallet balance...");
+      const balance = await walletProvider.getBalance();
+      const balanceEth = Number(balance) / 1e18;
+      const requiredEth = Number(args.feeAmount) / 1e18;
+      console.log(`Current Balance: ${balanceEth.toFixed(6)} ETH`);
+      console.log(`Required Bet: ${requiredEth.toFixed(6)} ETH`);
+      console.log(`Estimated Gas: ~0.00001 ETH (Base is cheap!)`);
+
+      // Only check if balance is sufficient for the bet amount
+      // Gas will be handled by the smart wallet/paymaster
+      if (balance < BigInt(args.feeAmount)) {
+        return `❌ Insufficient Balance
+
+Your wallet needs more ETH to play blackjack on Base Mainnet.
+
+Current Balance: ${balanceEth.toFixed(6)} ETH
+Required: ${requiredEth.toFixed(6)} ETH (bet amount)
+
+How to fix:
+1. Send at least ${requiredEth.toFixed(6)} ETH to your wallet: ${address}
+2. Bridge ETH to Base: https://bridge.base.org
+3. Or get free testnet ETH from faucet
+
+Your wallet address: ${address}`;
+      }
+
       // Call startGame with ETH value using encodeFunctionData + sendTransaction
+      console.log("\n📤 Sending startGame transaction...");
       const data = encodeFunctionData({
         abi: BlackjackAbi,
         functionName: "startGame",
@@ -255,8 +305,12 @@ export class BlackjackActionProvider extends ActionProvider<EvmWalletProvider> {
         value: BigInt(args.feeAmount),
       });
 
+      console.log(`✅ Transaction sent: ${hash}`);
+      console.log(`   Basescan: https://basescan.org/tx/${hash}`);
+
       // Wait for transaction confirmation
       await walletProvider.waitForTransactionReceipt(hash);
+      console.log("✅ Transaction confirmed");
 
       // Poll for VRF callback to complete
       const finalGameDisplay = await this.pollGameState(walletProvider, address, HandState.PendingInitialDeal);
@@ -267,6 +321,34 @@ export class BlackjackActionProvider extends ActionProvider<EvmWalletProvider> {
       return output;
     } catch (error) {
       const errorMsg = error instanceof Error ? error.message : String(error);
+
+      console.error("\n❌ Error starting game:", errorMsg);
+      
+      // Check for insufficient balance
+      if (errorMsg.includes("insufficient funds") || errorMsg.includes("failed to estimate gas")) {
+        // Get wallet balance for helpful error message
+        try {
+          const balance = await walletProvider.getBalance();
+          const balanceEth = Number(balance) / 1e18;
+          const requiredEth = Number(args.feeAmount) / 1e18;
+          
+          return `❌ Insufficient Balance Error
+
+Your wallet needs ETH to play blackjack on Base Mainnet.
+
+Current Balance: ${balanceEth.toFixed(6)} ETH
+Required: ~${requiredEth.toFixed(6)} ETH (bet) + gas fees
+
+How to fix:
+1. Send at least 0.001 ETH to your wallet: ${address}
+2. Bridge ETH to Base: https://bridge.base.org
+3. Or switch to testnet with free faucet ETH
+
+Your wallet address: ${address}`;
+        } catch (e) {
+          return `❌ Error: Insufficient funds. Your wallet needs ETH to play. Please fund ${address} with ETH on Base Mainnet.`;
+        }
+      }
 
       // Provide helpful error messages
       if (errorMsg.includes("Claim previous winnings first")) {

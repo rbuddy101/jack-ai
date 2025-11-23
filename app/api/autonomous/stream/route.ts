@@ -62,12 +62,26 @@ export async function GET() {
 
   const stream = new ReadableStream({
     start(controller) {
+      let isClosed = false;
+
+      // Helper to safely enqueue messages
+      const safeEnqueue = (message: string) => {
+        if (!isClosed) {
+          try {
+            controller.enqueue(encoder.encode(message));
+          } catch (error) {
+            console.error("Failed to enqueue message:", error);
+            isClosed = true;
+          }
+        }
+      };
+
       // Send initial connection message
       const initMessage = `data: ${JSON.stringify({
         type: "connected",
         timestamp: Date.now(),
       })}\n\n`;
-      controller.enqueue(encoder.encode(initMessage));
+      safeEnqueue(initMessage);
 
       // Send initial status immediately on connection
       (async () => {
@@ -88,7 +102,7 @@ export async function GET() {
             data: serializableStatus,
             timestamp: Date.now(),
           })}\n\n`;
-          controller.enqueue(encoder.encode(message));
+          safeEnqueue(message);
         } catch (error) {
           console.error("Initial status fetch error:", error);
         }
@@ -97,7 +111,7 @@ export async function GET() {
       // Event listener for game events
       const eventListener = (event: GameLoopEvent) => {
         const message = `data: ${JSON.stringify(event)}\n\n`;
-        controller.enqueue(encoder.encode(message));
+        safeEnqueue(message);
       };
 
       // Subscribe to events
@@ -105,6 +119,11 @@ export async function GET() {
 
       // Send periodic status updates
       const statusInterval = setInterval(async () => {
+        if (isClosed) {
+          clearInterval(statusInterval);
+          return;
+        }
+
         try {
           const status = await autonomousPlayer.getStatus();
           // Fetch real stats from blockchain
@@ -122,7 +141,7 @@ export async function GET() {
             data: serializableStatus,
             timestamp: Date.now(),
           })}\n\n`;
-          controller.enqueue(encoder.encode(message));
+          safeEnqueue(message);
         } catch (error) {
           console.error("Status update error:", error);
         }
@@ -130,9 +149,14 @@ export async function GET() {
 
       // Cleanup on disconnect
       const cleanup = () => {
+        isClosed = true;
         clearInterval(statusInterval);
         autonomousPlayer.off(eventListener);
-        controller.close();
+        try {
+          controller.close();
+        } catch (error) {
+          // Controller already closed
+        }
       };
 
       // Handle client disconnect

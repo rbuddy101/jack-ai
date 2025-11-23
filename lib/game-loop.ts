@@ -6,6 +6,7 @@
  */
 
 import type { BlackjackRPCClient } from "./rpc-client";
+import { EventEmitter } from "events";
 
 // Game states
 export enum GameLoopState {
@@ -65,15 +66,15 @@ enum HandState {
 /**
  * Autonomous Blackjack Game Loop
  */
-export class GameLoop {
+export class GameLoop extends EventEmitter {
   private rpcClient: BlackjackRPCClient;
   private state: GameLoopState = GameLoopState.IDLE;
   private currentGameId: bigint | null = null;
   private stats: GameStats;
   private lastGameResult: GameResult | null = null;
-  private eventCallbacks: Array<(event: GameLoopEvent) => void> = [];
 
   private constructor(rpcClient: BlackjackRPCClient, initialStats?: Partial<GameStats>) {
+    super(); // Call EventEmitter constructor
     this.rpcClient = rpcClient;
     this.stats = {
       gamesPlayed: initialStats?.gamesPlayed || 0,
@@ -123,33 +124,6 @@ export class GameLoop {
   }
 
   /**
-   * Register event callback
-   */
-  on(callback: (event: GameLoopEvent) => void): void {
-    this.eventCallbacks.push(callback);
-  }
-
-  /**
-   * Emit event to all listeners
-   */
-  private emit(type: string, data?: any): void {
-    const event: GameLoopEvent = {
-      type,
-      state: this.state,
-      data,
-      timestamp: Date.now(),
-    };
-
-    this.eventCallbacks.forEach((callback) => {
-      try {
-        callback(event);
-      } catch (error) {
-        console.error("Event callback error:", error);
-      }
-    });
-  }
-
-  /**
    * Transition to new state
    */
   private setState(newState: GameLoopState): void {
@@ -157,6 +131,72 @@ export class GameLoop {
     this.state = newState;
     console.log(`🔄 State: ${oldState} → ${newState}`);
     this.emit("state_change", { from: oldState, to: newState });
+  }
+
+  /**
+   * Update state (alias for setState for backwards compatibility)
+   */
+  private updateState(newState: GameLoopState): void {
+    this.setState(newState);
+  }
+
+  /**
+   * Start a new game
+   */
+  private async startGame(): Promise<void> {
+    this.setState(GameLoopState.STARTING_GAME);
+    
+    const betAmount = process.env.BET_AMOUNT || "700000000000000";
+    console.log(`💰 Starting game with bet: ${betAmount} wei`);
+    
+    const startSuccess = await this.executeAction("start", betAmount);
+
+    if (!startSuccess) {
+      console.log("❌ Failed to start game - stopping autonomous play");
+      this.setState(GameLoopState.ERROR);
+      this.emit("error", { message: "Failed to start game. Check wallet balance and contract state." });
+      throw new Error("Failed to start game");
+    }
+
+    // Wait for initial deal
+    this.setState(GameLoopState.WAITING_INITIAL_DEAL);
+    const afterDeal = await this.rpcClient.pollForStateChange(HandState.PendingInitialDeal);
+    this.currentGameId = afterDeal.gameId;
+    
+    this.emit("initial_deal", {
+      playerCards: afterDeal.playerCards,
+      playerTotal: afterDeal.playerTotal,
+      dealerCards: afterDeal.dealerCards,
+      dealerTotal: afterDeal.dealerTotal,
+    });
+
+    // Check if game ended immediately (blackjack)
+    if (this.rpcClient.isGameComplete(afterDeal.status)) {
+      this.setState(GameLoopState.GAME_COMPLETE);
+      const result = this.parseGameResult(afterDeal.status);
+      this.updateStats(result);
+      this.emit("game_complete", {
+        result,
+        status: afterDeal.status,
+        playerCards: afterDeal.playerCards,
+        playerTotal: afterDeal.playerTotal,
+        dealerCards: afterDeal.dealerCards,
+        dealerTotal: afterDeal.dealerTotal,
+      });
+
+      // Claim winnings if we won
+      if (result === GameResult.WIN && this.currentGameId) {
+        await this.claimWinnings(this.currentGameId);
+      }
+      return;
+    }
+
+    // Wait for trading period to end
+    this.setState(GameLoopState.WAITING_TRADING_PERIOD);
+    await this.rpcClient.waitForTradingPeriod();
+    
+    // Now play the hand
+    await this.playHand();
   }
 
   /**
@@ -232,172 +272,78 @@ export class GameLoop {
    * Main game loop - runs one complete game cycle
    */
   async runGameCycle(): Promise<void> {
-    try {
-      // IDLE → Check for existing game first
-      this.setState(GameLoopState.IDLE);
-      await this.sleep(1000);
+    this.updateState(GameLoopState.CHECKING_CLAIMABLE);
 
-      // Check current game status via contract
-      console.log("🔍 Checking for existing active game...");
-      const currentStatus = await this.rpcClient.getGameStatus();
-      this.currentGameId = currentStatus.gameId;
+    console.log("🔍 Checking for existing active game...");
+    
+    // Get current game state
+    const currentStatus = await this.rpcClient.getGameStatus();
+    
+    console.log("\n📊 === Current Game State ===");
+    console.log(`Game ID: ${currentStatus.gameId}`);
+    console.log(`Status: "${currentStatus.status}"`);
+    console.log(`Can Start New: ${currentStatus.canStartNew}`);
+    console.log(`Can Hit: ${currentStatus.canHit}`);
+    console.log(`Can Stand: ${currentStatus.canStand}`);
+    console.log(`Player Cards: ${currentStatus.playerCards.length}`);
+    console.log(`Dealer Cards: ${currentStatus.dealerCards.length}`);
+    console.log(`Started At: ${currentStatus.startedAt}`);
+    console.log(`Last Action At: ${currentStatus.lastActionAt}`);
+    console.log(`Trading Period Ends: ${currentStatus.tradingPeriodEnds}`);
+    console.log("===============================\n");
 
-      console.log(`📊 Current game state: ${currentStatus.status} (Game ID: ${currentStatus.gameId})`);
-
-      // Determine what to do based on current state
-      if (this.rpcClient.isGameComplete(currentStatus.status)) {
-        // Game is already complete - check for winnings, then start new
-        console.log("✅ Game already complete, checking for claimable winnings...");
-        this.setState(GameLoopState.GAME_COMPLETE);
-        const result = this.parseGameResult(currentStatus.status);
-        this.lastGameResult = result;
-        this.updateStats(result);
-        this.emit("game_complete", {
-          result,
-          status: currentStatus.status,
-          playerCards: currentStatus.playerCards,
-          playerTotal: currentStatus.playerTotal,
-          dealerCards: currentStatus.dealerCards,
-          dealerTotal: currentStatus.dealerTotal,
-        });
-
-        // Claim winnings if we won
-        if (result === GameResult.WIN && this.currentGameId) {
-          await this.claimWinnings(this.currentGameId);
+    // Check if we need to claim winnings from completed game
+    if (this.rpcClient.isGameComplete(currentStatus.status) && currentStatus.gameId > 0n) {
+      console.log(`✅ Game #${currentStatus.gameId} is complete, checking for claimable winnings...`);
+      
+      try {
+        const claimable = await this.rpcClient.getClaimableAmount(currentStatus.gameId);
+        console.log(`💰 Claimable amount: ${claimable} wei`);
+        
+        if (claimable > 0n) {
+          await this.claimWinnings(currentStatus.gameId);
+        } else {
+          console.log("ℹ️ No winnings to claim (already claimed or lost)");
         }
-
-        // Now start a fresh game
-        console.log("🎲 Starting new game...");
-        this.setState(GameLoopState.STARTING_GAME);
-        const betAmount = process.env.BET_AMOUNT || "700000000000000";
-        await this.executeAction("start", betAmount);
-
-        // Wait for initial deal
-        this.setState(GameLoopState.WAITING_INITIAL_DEAL);
-        const afterDeal = await this.rpcClient.pollForStateChange(HandState.PendingInitialDeal);
-        this.currentGameId = afterDeal.gameId;
-        this.emit("initial_deal", {
-          playerCards: afterDeal.playerCards,
-          playerTotal: afterDeal.playerTotal,
-          dealerCards: afterDeal.dealerCards,
-          dealerTotal: afterDeal.dealerTotal,
-        });
-
-        // Check if game ended immediately (blackjack)
-        if (this.rpcClient.isGameComplete(afterDeal.status)) {
-          this.setState(GameLoopState.GAME_COMPLETE);
-          const newResult = this.parseGameResult(afterDeal.status);
-          this.updateStats(newResult);
-          this.emit("game_complete", {
-            result: newResult,
-            status: afterDeal.status,
-            playerCards: afterDeal.playerCards,
-            playerTotal: afterDeal.playerTotal,
-            dealerCards: afterDeal.dealerCards,
-            dealerTotal: afterDeal.dealerTotal,
-          });
-
-          // Claim winnings if we won
-          if (newResult === GameResult.WIN && this.currentGameId) {
-            await this.claimWinnings(this.currentGameId);
-          }
-          return;
-        }
-
-        // Wait for trading period to end
-        this.setState(GameLoopState.WAITING_TRADING_PERIOD);
-        await this.rpcClient.waitForTradingPeriod();
-
-      } else if (currentStatus.canStartNew) {
-        // No active game - start new one
-        console.log("🎲 No active game, starting new one...");
-        this.setState(GameLoopState.STARTING_GAME);
-        const betAmount = process.env.BET_AMOUNT || "700000000000000";
-        await this.executeAction("start", betAmount);
-
-        // Wait for initial deal
-        this.setState(GameLoopState.WAITING_INITIAL_DEAL);
-        const afterDeal = await this.rpcClient.pollForStateChange(HandState.PendingInitialDeal);
-        this.currentGameId = afterDeal.gameId;
-        this.emit("initial_deal", {
-          playerCards: afterDeal.playerCards,
-          playerTotal: afterDeal.playerTotal,
-          dealerCards: afterDeal.dealerCards,
-          dealerTotal: afterDeal.dealerTotal,
-        });
-
-        // Check if game ended immediately (blackjack)
-        if (this.rpcClient.isGameComplete(afterDeal.status)) {
-          this.setState(GameLoopState.GAME_COMPLETE);
-          const result = this.parseGameResult(afterDeal.status);
-          this.updateStats(result);
-          this.emit("game_complete", {
-            result,
-            status: afterDeal.status,
-            playerCards: afterDeal.playerCards,
-            playerTotal: afterDeal.playerTotal,
-            dealerCards: afterDeal.dealerCards,
-            dealerTotal: afterDeal.dealerTotal,
-          });
-
-          // Claim winnings if we won
-          if (result === GameResult.WIN && this.currentGameId) {
-            await this.claimWinnings(this.currentGameId);
-          }
-          return;
-        }
-
-        // Wait for trading period to end
-        this.setState(GameLoopState.WAITING_TRADING_PERIOD);
-        await this.rpcClient.waitForTradingPeriod();
-
-      } else {
-        // Active game exists - resume it
-        console.log("🔄 Resuming active game...");
-
-        // Emit initial deal with current cards
-        this.emit("initial_deal", {
-          playerCards: currentStatus.playerCards,
-          playerTotal: currentStatus.playerTotal,
-          dealerCards: currentStatus.dealerCards,
-          dealerTotal: currentStatus.dealerTotal,
-        });
-
-        // Check if we're still in trading period
-        if (currentStatus.secondsUntilCanAct > 0n) {
-          console.log(`⏳ Trading period active, ${currentStatus.secondsUntilCanAct}s remaining`);
-          this.setState(GameLoopState.WAITING_TRADING_PERIOD);
-          await this.rpcClient.waitForTradingPeriod();
-        }
+      } catch (error) {
+        console.error("❌ Error checking/claiming winnings:", error);
       }
-
-      // Play the hand
+      
+      // After claiming (or if nothing to claim), start new game
+      console.log("\n🎲 Starting new game after previous completion...");
+      await this.startGame();
+    }
+    // Check if there's an active game that needs to be played
+    else if (!currentStatus.canStartNew && currentStatus.gameId > 0n) {
+      console.log(`♠️ Resuming active game #${currentStatus.gameId}...`);
+      
+      // Check if we're waiting for VRF
+      if (this.rpcClient.isWaitingForVRF(currentStatus.status)) {
+        console.log("⏳ Game is waiting for VRF callback, will poll for completion...");
+        // playHand will handle VRF polling
+      }
+      
+      // Check if trading period is active
+      if (currentStatus.secondsUntilCanAct > 0n) {
+        console.log(`⏳ Trading period active, waiting ${currentStatus.secondsUntilCanAct}s...`);
+        await this.rpcClient.waitForTradingPeriod();
+      }
+      
+      // Play the active game
       await this.playHand();
-
-      // Game complete
-      this.setState(GameLoopState.GAME_COMPLETE);
-      const finalStatus = await this.rpcClient.getGameStatus();
-      const result = this.parseGameResult(finalStatus.status);
-      this.lastGameResult = result;
-      this.updateStats(result);
-      this.emit("game_complete", {
-        result,
-        status: finalStatus.status,
-        playerCards: finalStatus.playerCards,
-        playerTotal: finalStatus.playerTotal,
-        dealerCards: finalStatus.dealerCards,
-        dealerTotal: finalStatus.dealerTotal,
-      });
-
-      // Claim winnings if we won
-      if (result === GameResult.WIN && this.currentGameId) {
-        await this.claimWinnings(this.currentGameId);
-      }
-    } catch (error) {
-      console.error("❌ Error in game cycle:", error);
-      this.setState(GameLoopState.ERROR);
-      this.emit("error", { error: error instanceof Error ? error.message : String(error) });
-      throw error;
+    }
+    // No active game - start fresh
+    else if (currentStatus.canStartNew) {
+      console.log("🎲 No active game, starting new one...");
+      await this.startGame();
+    }
+    else {
+      console.log("⚠️ Unknown game state - cannot proceed");
+      console.log(`Status: ${currentStatus.status}`);
+      console.log(`Can Start New: ${currentStatus.canStartNew}`);
+      console.log(`Game ID: ${currentStatus.gameId}`);
+      this.updateState(GameLoopState.ERROR);
+      this.emit("error", { message: "Unknown game state", status: currentStatus.status });
     }
   }
 
@@ -486,7 +432,7 @@ export class GameLoop {
   /**
    * Execute action via /api/agent endpoint
    */
-  private async executeAction(action: "start" | "hit" | "stand", betAmount?: string): Promise<void> {
+  private async executeAction(action: "start" | "hit" | "stand", betAmount?: string): Promise<boolean> {
     try {
       let message = "";
 
@@ -500,7 +446,12 @@ export class GameLoop {
 
       console.log(`\n🤖 Calling AI agent: ${message}`);
 
-      const response = await fetch("http://localhost:3000/api/agent", {
+      // Use relative URL to work with any port
+      const apiUrl = typeof window !== 'undefined'
+        ? '/api/agent'
+        : `http://localhost:${process.env.PORT || 3000}/api/agent`;
+
+      const response = await fetch(apiUrl, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ userMessage: message }),
@@ -511,11 +462,26 @@ export class GameLoop {
       }
 
       const data = await response.json();
+      const agentResponse = data.response || "";
+
+      // Check if the response indicates an error
+      const errorKeywords = ["error", "failed", "reverted", "insufficient", "check your balance", "try again later", "needs more eth", "needs eth"];
+      const hasError = errorKeywords.some(keyword =>
+        agentResponse.toLowerCase().includes(keyword)
+      );
+
+      if (hasError) {
+        console.log(`❌ ${action.toUpperCase()} action failed`);
+        console.log(`🤖 Agent response: ${agentResponse.substring(0, 200)}`);
+        return false;
+      }
+
       console.log(`✅ ${action.toUpperCase()} action executed`);
-      console.log(`🤖 Agent response: ${data.response?.substring(0, 200) || "No response"}`);
+      console.log(`🤖 Agent response: ${agentResponse.substring(0, 200)}`);
+      return true;
     } catch (error) {
       console.error(`❌ Failed to execute ${action}:`, error);
-      throw error;
+      return false;
     }
   }
 
@@ -534,17 +500,17 @@ export class GameLoop {
   }
 
   /**
-   * Get statistics
-   */
-  getStats(): GameStats {
-    return { ...this.stats };
-  }
-
-  /**
    * Get current game ID
    */
   getCurrentGameId(): bigint | null {
     return this.currentGameId;
+  }
+
+  /**
+   * Get current statistics
+   */
+  getStats(): GameStats {
+    return { ...this.stats };
   }
 
   /**

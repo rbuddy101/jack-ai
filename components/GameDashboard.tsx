@@ -13,12 +13,26 @@ import { ActionLog } from "./ActionLog";
 import { CardDisplay } from "./CardDisplay";
 
 export function GameDashboard() {
-  const { status, events, currentCards, lastGameResult, isLoading, error, startPlay, stopPlay } = useAutonomousPlayer();
+  const { status, events, currentCards, lastGameResult, isLoading, error, startPlay, stopPlay, startSimulatedPlay } = useAutonomousPlayer();
 
   const betAmount = process.env.NEXT_PUBLIC_BET_AMOUNT || "0.0007";
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-gray-900 via-gray-800 to-gray-900 text-white p-8">
+
+        {/* Simulated Play Button - Top Left */}
+        <div className="mb-4">
+          <button
+            onClick={startSimulatedPlay}
+            disabled={status?.isRunning}
+            className="px-6 py-3 bg-blue-600 hover:bg-blue-700 disabled:bg-gray-600 disabled:cursor-not-allowed rounded-lg font-semibold transition-colors shadow-lg"
+          >
+            ▶ Quick Play
+          </button>
+          <p className="text-gray-400 text-xs mt-1">
+            Fast simulated game for testing
+          </p>
+        </div>
 
         {/* Controls */}
         <div className="bg-gray-800 rounded-lg p-6 mb-8 border border-gray-700">
