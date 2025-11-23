@@ -13,7 +13,7 @@ import { ActionLog } from "./ActionLog";
 import { CardDisplay } from "./CardDisplay";
 
 export function GameDashboard() {
-  const { status, events, currentCards, lastGameResult, isLoading, error, walletInfo, startPlay, stopPlay, startSimulatedPlay } = useAutonomousPlayer();
+  const { status, events, currentCards, lastGameResult, isLoading, error, walletInfo, startPlay, stopPlay, startSimulatedPlay, sellWass } = useAutonomousPlayer();
 
   const betAmount = process.env.NEXT_PUBLIC_BET_AMOUNT || "0.0007";
 
@@ -48,8 +48,11 @@ export function GameDashboard() {
                     AI Wallet: <span className="font-mono text-xs">{walletInfo.address}</span>
                   </p>
                   <p className={`text-sm mt-1 font-semibold ${walletInfo.balance >= 0.0007 ? 'text-green-400' : 'text-yellow-400'}`}>
-                    Balance: {walletInfo.balance.toFixed(6)} ETH
+                    ETH Balance: {walletInfo.balance.toFixed(6)} ETH
                     {walletInfo.balance < 0.0007 && ' ⚠️ Low Balance'}
+                  </p>
+                  <p className="text-sm mt-1 font-semibold text-purple-400">
+                    wASS Balance: {walletInfo.wAssBalance.toFixed(2)} wASS
                   </p>
                 </>
               )}
@@ -76,6 +79,21 @@ export function GameDashboard() {
                 className="px-6 py-3 bg-red-600 hover:bg-red-700 disabled:bg-gray-600 disabled:cursor-not-allowed rounded-lg font-semibold transition-colors"
               >
                 {isLoading ? "Stopping..." : "■ Stop Play"}
+              </button>
+
+              <button
+                onClick={async () => {
+                  try {
+                    await sellWass();
+                    alert('wASS sold successfully!');
+                  } catch (err) {
+                    alert(`Failed to sell wASS: ${err instanceof Error ? err.message : 'Unknown error'}`);
+                  }
+                }}
+                disabled={isLoading || !walletInfo || walletInfo.wAssBalance <= 0}
+                className="px-6 py-3 bg-purple-600 hover:bg-purple-700 disabled:bg-gray-600 disabled:cursor-not-allowed rounded-lg font-semibold transition-colors"
+              >
+                {isLoading ? "Selling..." : "💰 Sell wASS"}
               </button>
             </div>
           </div>

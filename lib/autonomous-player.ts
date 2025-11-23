@@ -120,15 +120,25 @@ class AutonomousPlayerInstance {
   private async runContinuousLoop(): Promise<void> {
     try {
       console.log("\n" + "=".repeat(60));
-      console.log("🎲 STARTING SINGLE GAME");
+      console.log("🎲 STARTING CONTINUOUS AUTONOMOUS PLAY");
       console.log("=".repeat(60) + "\n");
 
-      // Run one game cycle
-      await this.gameLoop!.runGameCycle();
+      // Continuously run game cycles until stopped
+      while (this.isRunning) {
+        console.log("\n" + "=".repeat(60));
+        console.log("🔄 STARTING NEW GAME CYCLE");
+        console.log("=".repeat(60) + "\n");
 
-      // Stop after one game
-      this.isRunning = false;
-      console.log("✅ Game completed - stopped autonomous play");
+        await this.gameLoop!.runGameCycle();
+
+        // Small delay between games
+        if (this.isRunning) {
+          console.log("⏳ Waiting 3 seconds before next game...\n");
+          await new Promise(resolve => setTimeout(resolve, 3000));
+        }
+      }
+
+      console.log("✅ Continuous play stopped by user");
     } catch (error) {
       console.error("❌ Error in game loop:", error);
       this.currentError = error instanceof Error ? error.message : String(error);

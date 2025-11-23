@@ -46,10 +46,11 @@ interface UseAutonomousPlayerResult {
   lastGameResult: LastGameResult | null;
   isLoading: boolean;
   error: string | null;
-  walletInfo: { address: string; balance: number } | null;
+  walletInfo: { address: string; balance: number; wAssBalance: number } | null;
   startPlay: () => Promise<void>;
   stopPlay: () => Promise<void>;
   startSimulatedPlay: () => void;
+  sellWass: () => Promise<void>;
 }
 
 export function useAutonomousPlayer(): UseAutonomousPlayerResult {
@@ -59,7 +60,8 @@ export function useAutonomousPlayer(): UseAutonomousPlayerResult {
   const [lastGameResult, setLastGameResult] = useState<LastGameResult | null>(null);
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [walletInfo, setWalletInfo] = useState<{ address: string; balance: number } | null>(null);
+  const [walletInfo, setWalletInfo] = useState<{ address: string; balance: number; wAssBalance: number } | null>(null);
+  const [isSelling, setIsSelling] = useState(false);
   const eventSourceRef = useRef<EventSource | null>(null);
   const simulationTimeoutRef = useRef<NodeJS.Timeout | null>(null);
 
@@ -542,12 +544,47 @@ export function useAutonomousPlayer(): UseAutonomousPlayerResult {
         setWalletInfo({
           address: data.address,
           balance: data.balance,
+          wAssBalance: data.wAssBalance || 0,
         });
       }
     } catch (error) {
       console.error("Failed to fetch wallet info:", error);
     }
   }, []);
+
+  /**
+   * Sell all wASS tokens
+   */
+  const sellWass = useCallback(async () => {
+    setIsSelling(true);
+    setError(null);
+
+    try {
+      const response = await fetch("/api/sell-wass", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+      });
+
+      if (!response.ok) {
+        const error = await response.json();
+        throw new Error(error.error || `HTTP ${response.status}`);
+      }
+
+      const data = await response.json();
+      console.log("✅ wASS sold successfully:", data);
+
+      // Refresh wallet info to show updated balances
+      await fetchWalletInfo();
+
+      return data;
+    } catch (error) {
+      console.error("Failed to sell wASS:", error);
+      setError(error instanceof Error ? error.message : "Unknown error");
+      throw error;
+    } finally {
+      setIsSelling(false);
+    }
+  }, [fetchWalletInfo]);
 
   /**
    * Start autonomous play
@@ -631,11 +668,12 @@ export function useAutonomousPlayer(): UseAutonomousPlayerResult {
     events,
     currentCards,
     lastGameResult,
-    isLoading,
+    isLoading: isLoading || isSelling,
     error,
     walletInfo,
     startPlay,
     stopPlay,
     startSimulatedPlay,
+    sellWass,
   };
 }

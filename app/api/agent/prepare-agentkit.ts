@@ -2,6 +2,8 @@ import {
   AgentKit,
   CdpSmartWalletProvider,
   WalletProvider,
+  cdpApiActionProvider,
+  cdpSmartWalletActionProvider,
 } from "@coinbase/agentkit";
 import { blackjackActionProvider } from "./action-providers/blackjack";
 import * as fs from "fs";
@@ -93,17 +95,20 @@ export async function prepareAgentkitAndWalletProvider(): Promise<{
       networkId: process.env.NETWORK_ID || "base-sepolia",
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       owner: owner as any,
-      address: walletData?.smartWalletAddress,
+      address: process.env.AI_WALLET as Address, // Lock to specific wallet from .env
       paymasterUrl: process.env.PAYMASTER_URL, // Sponsor transactions: https://docs.cdp.coinbase.com/paymaster/docs/welcome
       rpcUrl: process.env.RPC_URL,
       idempotencyKey: process.env.IDEMPOTENCY_KEY,
     });
 
-    // Initialize AgentKit with only Blackjack action provider
+    // Initialize AgentKit with Blackjack and CDP action providers
+    // CDP action provider enables trade/swap functionality (mainnet only)
     const agentkit = await AgentKit.from({
       walletProvider,
       actionProviders: [
         blackjackActionProvider(),
+        cdpApiActionProvider(), // Adds faucet and CDP API actions
+        cdpSmartWalletActionProvider(), // Adds trade action for token swaps
       ],
     });
 
