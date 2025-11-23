@@ -213,9 +213,7 @@ export class BlackjackRPCClient {
       console.log(`✅ Claim transaction sent: ${hash}`);
 
       // Wait for confirmation
-      const receipt = await this.walletProvider.waitForTransactionReceipt({
-        hash: hash as `0x${string}`,
-      });
+      const receipt = await this.walletProvider.waitForTransactionReceipt(hash as `0x${string}`);
 
       console.log(`✅ Claim confirmed in block ${receipt.blockNumber}`);
       console.log(`💰 Successfully claimed ${claimable} wei!`);
@@ -318,31 +316,5 @@ export class BlackjackRPCClient {
   }
 }
 
-/**
- * Create RPC client instance
- * Reuses the wallet provider from prepare-agentkit to avoid creating multiple wallets
- */
-export async function createRPCClient(): Promise<BlackjackRPCClient> {
-  if (!process.env.AI_WALLET) {
-    throw new Error("AI_WALLET not set in environment");
-  }
-
-  if (!process.env.BLACKJACK_CONTRACT_ADDRESS) {
-    throw new Error("BLACKJACK_CONTRACT_ADDRESS not set in environment");
-  }
-
-  if (!process.env.CDP_API_KEY_ID || !process.env.CDP_API_KEY_SECRET) {
-    throw new Error("CDP API credentials not set in environment");
-  }
-
-  // Import prepare-agentkit to get the wallet provider
-  const { walletProvider } = await import("../app/api/agent/prepare-agentkit").then(
-    (mod) => mod.prepareAgentkitAndWalletProvider()
-  );
-
-  return new BlackjackRPCClient(
-    walletProvider,
-    process.env.BLACKJACK_CONTRACT_ADDRESS,
-    process.env.AI_WALLET
-  );
-}
+// NOTE: createRPCClient() moved to rpc-client-factory.ts
+// to avoid importing Node.js modules (fs) in Edge Runtime routes

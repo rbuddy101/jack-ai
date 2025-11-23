@@ -29,6 +29,10 @@ export async function GET() {
     const playerAddress = process.env.AI_WALLET;
     const contractAddress = process.env.BLACKJACK_CONTRACT_ADDRESS;
 
+    if (!contractAddress || !playerAddress) {
+      throw new Error("Missing required environment variables: BLACKJACK_CONTRACT_ADDRESS and AI_WALLET");
+    }
+
     // Initialize RPC client
     const rpcClient = new BlackjackRPCClient(walletProvider, contractAddress, playerAddress);
 

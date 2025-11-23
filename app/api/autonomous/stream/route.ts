@@ -2,6 +2,16 @@
  * Server-Sent Events (SSE) Stream for Real-Time Updates
  *
  * Provides real-time game events to the dashboard.
+ *
+ * NOTE: Cannot use Edge Runtime due to @coinbase/agentkit using Node.js 'fs' module.
+ * Uses Node.js runtime with Vercel timeout limits:
+ * - Free/Hobby: 15 seconds max
+ * - Pro: 5 minutes max (requires config in vercel.json)
+ *
+ * For production with longer streams, consider:
+ * 1. Upgrading to Vercel Pro
+ * 2. Using a separate WebSocket server
+ * 3. Client-side polling as fallback
  */
 
 import autonomousPlayer from "@/lib/autonomous-player";
@@ -23,6 +33,10 @@ async function fetchRealStats() {
   const playerAddress = process.env.AI_WALLET;
   const contractAddress = process.env.BLACKJACK_CONTRACT_ADDRESS;
 
+  if (!contractAddress || !playerAddress) {
+    throw new Error("Missing required environment variables: BLACKJACK_CONTRACT_ADDRESS and AI_WALLET");
+  }
+
   const rpcClient = new BlackjackRPCClient(walletProvider, contractAddress, playerAddress);
   const stats = await rpcClient.getPlayerStats();
 
@@ -33,6 +47,9 @@ async function fetchRealStats() {
     pushes: Number(stats.gamesPushed),
     busts: Number(stats.playerBusts),
     winRate: stats.winRate,
+    currentStreak: 0, // Not provided by contract stats
+    longestWinStreak: 0, // Not provided by contract stats
+    longestLossStreak: 0, // Not provided by contract stats
   };
 }
 

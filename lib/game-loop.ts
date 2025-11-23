@@ -39,6 +39,9 @@ export interface GameStats {
   pushes: number;
   busts: number;
   winRate: number;
+  currentStreak: number;
+  longestWinStreak: number;
+  longestLossStreak: number;
 }
 
 // Game loop event
@@ -79,6 +82,9 @@ export class GameLoop {
       pushes: initialStats?.pushes || 0,
       busts: initialStats?.busts || 0,
       winRate: initialStats?.winRate || 0,
+      currentStreak: initialStats?.currentStreak || 0,
+      longestWinStreak: initialStats?.longestWinStreak || 0,
+      longestLossStreak: initialStats?.longestLossStreak || 0,
     };
   }
 
@@ -106,6 +112,9 @@ export class GameLoop {
         pushes: Number(contractStats.gamesPushed),
         busts: Number(contractStats.playerBusts),
         winRate: contractStats.winRate,
+        currentStreak: 0, // Not tracked by contract
+        longestWinStreak: 0, // Not tracked by contract
+        longestLossStreak: 0, // Not tracked by contract
       });
     } catch (error) {
       console.warn("⚠️ Failed to load historical stats, starting fresh:", error);

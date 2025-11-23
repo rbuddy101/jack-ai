@@ -5,7 +5,7 @@
  * Coordinates game loop, RPC client, and event streaming.
  */
 
-import { createRPCClient } from "./rpc-client";
+import { createRPCClient } from "./rpc-client-factory";
 import type { BlackjackRPCClient } from "./rpc-client";
 import { GameLoop, GameLoopState } from "./game-loop";
 import type { GameLoopEvent, GameStats } from "./game-loop";
@@ -149,6 +149,9 @@ class AutonomousPlayerInstance {
           pushes: 0,
           busts: 0,
           winRate: 0,
+          currentStreak: 0,
+          longestWinStreak: 0,
+          longestLossStreak: 0,
         },
         currentGameId: null,
         error: this.currentError,
