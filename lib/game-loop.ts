@@ -1,0 +1,547 @@
+/**
+ * Game Loop State Machine
+ *
+ * Manages autonomous blackjack gameplay with a state machine architecture.
+ * Coordinates between direct RPC calls and AI decision-making.
+ */
+
+import type { BlackjackRPCClient } from "./rpc-client";
+
+// Game states
+export enum GameLoopState {
+  IDLE = "IDLE",
+  CHECKING_CLAIMABLE = "CHECKING_CLAIMABLE",
+  CLAIMING_WINNINGS = "CLAIMING_WINNINGS",
+  STARTING_GAME = "STARTING_GAME",
+  WAITING_INITIAL_DEAL = "WAITING_INITIAL_DEAL",
+  WAITING_TRADING_PERIOD = "WAITING_TRADING_PERIOD",
+  PLAYING = "PLAYING",
+  WAITING_HIT_VRF = "WAITING_HIT_VRF",
+  WAITING_STAND_VRF = "WAITING_STAND_VRF",
+  GAME_COMPLETE = "GAME_COMPLETE",
+  ERROR = "ERROR",
+}
+
+// Game result types
+export enum GameResult {
+  WIN = "WIN",
+  LOSS = "LOSS",
+  PUSH = "PUSH",
+  BUST = "BUST",
+  UNKNOWN = "UNKNOWN",
+}
+
+// Statistics tracking
+export interface GameStats {
+  gamesPlayed: number;
+  wins: number;
+  losses: number;
+  pushes: number;
+  busts: number;
+  winRate: number;
+}
+
+// Game loop event
+export interface GameLoopEvent {
+  type: string;
+  state: GameLoopState;
+  data?: any;
+  timestamp: number;
+}
+
+enum HandState {
+  None = 0,
+  PendingInitialDeal = 1,
+  Active = 2,
+  PendingHit = 3,
+  PendingStand = 4,
+  Busted = 5,
+  Finished = 6,
+}
+
+/**
+ * Autonomous Blackjack Game Loop
+ */
+export class GameLoop {
+  private rpcClient: BlackjackRPCClient;
+  private state: GameLoopState = GameLoopState.IDLE;
+  private currentGameId: bigint | null = null;
+  private stats: GameStats;
+  private lastGameResult: GameResult | null = null;
+  private eventCallbacks: Array<(event: GameLoopEvent) => void> = [];
+
+  private constructor(rpcClient: BlackjackRPCClient, initialStats?: Partial<GameStats>) {
+    this.rpcClient = rpcClient;
+    this.stats = {
+      gamesPlayed: initialStats?.gamesPlayed || 0,
+      wins: initialStats?.wins || 0,
+      losses: initialStats?.losses || 0,
+      pushes: initialStats?.pushes || 0,
+      busts: initialStats?.busts || 0,
+      winRate: initialStats?.winRate || 0,
+    };
+  }
+
+  /**
+   * Create a new GameLoop instance with historical stats from contract
+   */
+  static async create(rpcClient: BlackjackRPCClient): Promise<GameLoop> {
+    try {
+      console.log("📊 Loading historical stats from contract...");
+      const contractStats = await rpcClient.getPlayerStats();
+
+      console.log("✅ Historical stats loaded:", {
+        gamesPlayed: contractStats.gamesPlayed.toString(),
+        wins: contractStats.gamesWon.toString(),
+        losses: contractStats.gamesLost.toString(),
+        pushes: contractStats.gamesPushed.toString(),
+        busts: contractStats.playerBusts.toString(),
+        winRate: contractStats.winRate,
+      });
+
+      return new GameLoop(rpcClient, {
+        gamesPlayed: Number(contractStats.gamesPlayed),
+        wins: Number(contractStats.gamesWon),
+        losses: Number(contractStats.gamesLost),
+        pushes: Number(contractStats.gamesPushed),
+        busts: Number(contractStats.playerBusts),
+        winRate: contractStats.winRate,
+      });
+    } catch (error) {
+      console.warn("⚠️ Failed to load historical stats, starting fresh:", error);
+      return new GameLoop(rpcClient);
+    }
+  }
+
+  /**
+   * Register event callback
+   */
+  on(callback: (event: GameLoopEvent) => void): void {
+    this.eventCallbacks.push(callback);
+  }
+
+  /**
+   * Emit event to all listeners
+   */
+  private emit(type: string, data?: any): void {
+    const event: GameLoopEvent = {
+      type,
+      state: this.state,
+      data,
+      timestamp: Date.now(),
+    };
+
+    this.eventCallbacks.forEach((callback) => {
+      try {
+        callback(event);
+      } catch (error) {
+        console.error("Event callback error:", error);
+      }
+    });
+  }
+
+  /**
+   * Transition to new state
+   */
+  private setState(newState: GameLoopState): void {
+    const oldState = this.state;
+    this.state = newState;
+    console.log(`🔄 State: ${oldState} → ${newState}`);
+    this.emit("state_change", { from: oldState, to: newState });
+  }
+
+  /**
+   * Update statistics
+   */
+  private updateStats(result: GameResult): void {
+    this.stats.gamesPlayed++;
+
+    switch (result) {
+      case GameResult.WIN:
+        this.stats.wins++;
+        break;
+      case GameResult.LOSS:
+        this.stats.losses++;
+        break;
+      case GameResult.BUST:
+        this.stats.busts++;
+        this.stats.losses++;
+        break;
+      case GameResult.PUSH:
+        this.stats.pushes++;
+        break;
+    }
+
+    this.stats.winRate = this.stats.gamesPlayed > 0 ? this.stats.wins / this.stats.gamesPlayed : 0;
+
+    this.emit("stats_update", this.stats);
+  }
+
+  /**
+   * Parse game result from status string
+   */
+  private parseGameResult(status: string): GameResult {
+    const statusLower = status.toLowerCase();
+
+    if (statusLower.includes("you win") || statusLower.includes("blackjack")) {
+      return GameResult.WIN;
+    } else if (statusLower.includes("dealer wins")) {
+      return GameResult.LOSS;
+    } else if (statusLower.includes("busted")) {
+      return GameResult.BUST;
+    } else if (statusLower.includes("push")) {
+      return GameResult.PUSH;
+    }
+
+    return GameResult.UNKNOWN;
+  }
+
+  /**
+   * Claim winnings for a game (extracted to avoid duplication)
+   */
+  private async claimWinnings(gameId: bigint): Promise<void> {
+    try {
+      this.setState(GameLoopState.CHECKING_CLAIMABLE);
+      const claimable = await this.rpcClient.getClaimableAmount(gameId);
+
+      if (claimable > 0n) {
+        this.setState(GameLoopState.CLAIMING_WINNINGS);
+        console.log(`💰 Attempting to claim ${claimable} wei from game ${gameId}`);
+        await this.rpcClient.claimWinnings(gameId);
+        this.emit("winnings_claimed", { gameId, amount: claimable });
+        console.log(`✅ Successfully claimed ${claimable} wei`);
+      } else {
+        console.log(`ℹ️  No claimable winnings for game ${gameId}`);
+      }
+    } catch (error) {
+      console.error("⚠️  Failed to claim winnings, will continue to next game:", error);
+      // Don't throw - continue to next game even if claiming fails
+    }
+  }
+
+  /**
+   * Main game loop - runs one complete game cycle
+   */
+  async runGameCycle(): Promise<void> {
+    try {
+      // IDLE → Check for existing game first
+      this.setState(GameLoopState.IDLE);
+      await this.sleep(1000);
+
+      // Check current game status via contract
+      console.log("🔍 Checking for existing active game...");
+      const currentStatus = await this.rpcClient.getGameStatus();
+      this.currentGameId = currentStatus.gameId;
+
+      console.log(`📊 Current game state: ${currentStatus.status} (Game ID: ${currentStatus.gameId})`);
+
+      // Determine what to do based on current state
+      if (this.rpcClient.isGameComplete(currentStatus.status)) {
+        // Game is already complete - check for winnings, then start new
+        console.log("✅ Game already complete, checking for claimable winnings...");
+        this.setState(GameLoopState.GAME_COMPLETE);
+        const result = this.parseGameResult(currentStatus.status);
+        this.lastGameResult = result;
+        this.updateStats(result);
+        this.emit("game_complete", {
+          result,
+          status: currentStatus.status,
+          playerCards: currentStatus.playerCards,
+          playerTotal: currentStatus.playerTotal,
+          dealerCards: currentStatus.dealerCards,
+          dealerTotal: currentStatus.dealerTotal,
+        });
+
+        // Claim winnings if we won
+        if (result === GameResult.WIN && this.currentGameId) {
+          await this.claimWinnings(this.currentGameId);
+        }
+
+        // Now start a fresh game
+        console.log("🎲 Starting new game...");
+        this.setState(GameLoopState.STARTING_GAME);
+        const betAmount = process.env.BET_AMOUNT || "700000000000000";
+        await this.executeAction("start", betAmount);
+
+        // Wait for initial deal
+        this.setState(GameLoopState.WAITING_INITIAL_DEAL);
+        const afterDeal = await this.rpcClient.pollForStateChange(HandState.PendingInitialDeal);
+        this.currentGameId = afterDeal.gameId;
+        this.emit("initial_deal", {
+          playerCards: afterDeal.playerCards,
+          playerTotal: afterDeal.playerTotal,
+          dealerCards: afterDeal.dealerCards,
+          dealerTotal: afterDeal.dealerTotal,
+        });
+
+        // Check if game ended immediately (blackjack)
+        if (this.rpcClient.isGameComplete(afterDeal.status)) {
+          this.setState(GameLoopState.GAME_COMPLETE);
+          const newResult = this.parseGameResult(afterDeal.status);
+          this.updateStats(newResult);
+          this.emit("game_complete", {
+            result: newResult,
+            status: afterDeal.status,
+            playerCards: afterDeal.playerCards,
+            playerTotal: afterDeal.playerTotal,
+            dealerCards: afterDeal.dealerCards,
+            dealerTotal: afterDeal.dealerTotal,
+          });
+
+          // Claim winnings if we won
+          if (newResult === GameResult.WIN && this.currentGameId) {
+            await this.claimWinnings(this.currentGameId);
+          }
+          return;
+        }
+
+        // Wait for trading period to end
+        this.setState(GameLoopState.WAITING_TRADING_PERIOD);
+        await this.rpcClient.waitForTradingPeriod();
+
+      } else if (currentStatus.canStartNew) {
+        // No active game - start new one
+        console.log("🎲 No active game, starting new one...");
+        this.setState(GameLoopState.STARTING_GAME);
+        const betAmount = process.env.BET_AMOUNT || "700000000000000";
+        await this.executeAction("start", betAmount);
+
+        // Wait for initial deal
+        this.setState(GameLoopState.WAITING_INITIAL_DEAL);
+        const afterDeal = await this.rpcClient.pollForStateChange(HandState.PendingInitialDeal);
+        this.currentGameId = afterDeal.gameId;
+        this.emit("initial_deal", {
+          playerCards: afterDeal.playerCards,
+          playerTotal: afterDeal.playerTotal,
+          dealerCards: afterDeal.dealerCards,
+          dealerTotal: afterDeal.dealerTotal,
+        });
+
+        // Check if game ended immediately (blackjack)
+        if (this.rpcClient.isGameComplete(afterDeal.status)) {
+          this.setState(GameLoopState.GAME_COMPLETE);
+          const result = this.parseGameResult(afterDeal.status);
+          this.updateStats(result);
+          this.emit("game_complete", {
+            result,
+            status: afterDeal.status,
+            playerCards: afterDeal.playerCards,
+            playerTotal: afterDeal.playerTotal,
+            dealerCards: afterDeal.dealerCards,
+            dealerTotal: afterDeal.dealerTotal,
+          });
+
+          // Claim winnings if we won
+          if (result === GameResult.WIN && this.currentGameId) {
+            await this.claimWinnings(this.currentGameId);
+          }
+          return;
+        }
+
+        // Wait for trading period to end
+        this.setState(GameLoopState.WAITING_TRADING_PERIOD);
+        await this.rpcClient.waitForTradingPeriod();
+
+      } else {
+        // Active game exists - resume it
+        console.log("🔄 Resuming active game...");
+
+        // Emit initial deal with current cards
+        this.emit("initial_deal", {
+          playerCards: currentStatus.playerCards,
+          playerTotal: currentStatus.playerTotal,
+          dealerCards: currentStatus.dealerCards,
+          dealerTotal: currentStatus.dealerTotal,
+        });
+
+        // Check if we're still in trading period
+        if (currentStatus.secondsUntilCanAct > 0n) {
+          console.log(`⏳ Trading period active, ${currentStatus.secondsUntilCanAct}s remaining`);
+          this.setState(GameLoopState.WAITING_TRADING_PERIOD);
+          await this.rpcClient.waitForTradingPeriod();
+        }
+      }
+
+      // Play the hand
+      await this.playHand();
+
+      // Game complete
+      this.setState(GameLoopState.GAME_COMPLETE);
+      const finalStatus = await this.rpcClient.getGameStatus();
+      const result = this.parseGameResult(finalStatus.status);
+      this.lastGameResult = result;
+      this.updateStats(result);
+      this.emit("game_complete", {
+        result,
+        status: finalStatus.status,
+        playerCards: finalStatus.playerCards,
+        playerTotal: finalStatus.playerTotal,
+        dealerCards: finalStatus.dealerCards,
+        dealerTotal: finalStatus.dealerTotal,
+      });
+
+      // Claim winnings if we won
+      if (result === GameResult.WIN && this.currentGameId) {
+        await this.claimWinnings(this.currentGameId);
+      }
+    } catch (error) {
+      console.error("❌ Error in game cycle:", error);
+      this.setState(GameLoopState.ERROR);
+      this.emit("error", { error: error instanceof Error ? error.message : String(error) });
+      throw error;
+    }
+  }
+
+  /**
+   * Play the active hand (hit/stand decisions)
+   * Note: AI decision logic must be injected from server-side code
+   */
+  private async playHand(): Promise<void> {
+    this.setState(GameLoopState.PLAYING);
+
+    while (true) {
+      const gameStatus = await this.rpcClient.getGameStatus();
+
+      console.log(`\n📊 GAME STATUS DEBUG:`);
+      console.log(`   Status: "${gameStatus.status}"`);
+      console.log(`   Player Total: ${gameStatus.playerTotal}`);
+      console.log(`   Dealer Total: ${gameStatus.dealerTotal}`);
+      console.log(`   Can Hit: ${gameStatus.canHit}`);
+      console.log(`   Can Stand: ${gameStatus.canStand}`);
+      console.log(`   Is Complete: ${this.rpcClient.isGameComplete(gameStatus.status)}`);
+      console.log(`   Is Waiting VRF: ${this.rpcClient.isWaitingForVRF(gameStatus.status)}`);
+
+      // Check if game is complete
+      if (this.rpcClient.isGameComplete(gameStatus.status)) {
+        console.log("✅ Game is complete, exiting play loop");
+        break;
+      }
+
+      // Check if waiting for VRF
+      if (this.rpcClient.isWaitingForVRF(gameStatus.status)) {
+        console.log("⏳ Still waiting for VRF...");
+        await this.sleep(2000);
+        continue;
+      }
+
+      // Can't act yet
+      if (!gameStatus.canHit && !gameStatus.canStand) {
+        console.log("⏳ Cannot act yet (canHit=false, canStand=false)");
+        await this.sleep(2000);
+        continue;
+      }
+
+      // Make decision via API call (server-side AI)
+      const decision = await this.getDecision(
+        gameStatus.playerTotal,
+        gameStatus.dealerTotal,
+        gameStatus.playerCards,
+        gameStatus.dealerCards
+      );
+
+      this.emit("decision", {
+        action: decision,
+        playerTotal: gameStatus.playerTotal,
+        dealerTotal: gameStatus.dealerTotal,
+      });
+
+      // Execute decision via API
+      if (decision === "hit") {
+        await this.executeAction("hit");
+        this.setState(GameLoopState.WAITING_HIT_VRF);
+        await this.rpcClient.pollForStateChange(HandState.PendingHit);
+      } else {
+        await this.executeAction("stand");
+        this.setState(GameLoopState.WAITING_STAND_VRF);
+        await this.rpcClient.pollForStateChange(HandState.PendingStand);
+        break; // Stand ends the hand
+      }
+
+      this.setState(GameLoopState.PLAYING);
+    }
+  }
+
+  /**
+   * Get AI decision via API call
+   */
+  private async getDecision(
+    playerTotal: number,
+    dealerTotal: number,
+    playerCards: any[],
+    dealerCards: any[]
+  ): Promise<"hit" | "stand"> {
+    // Basic strategy fallback (hit on <17, stand on >=17)
+    return playerTotal < 17 ? "hit" : "stand";
+  }
+
+  /**
+   * Execute action via /api/agent endpoint
+   */
+  private async executeAction(action: "start" | "hit" | "stand", betAmount?: string): Promise<void> {
+    try {
+      let message = "";
+
+      if (action === "start") {
+        message = `Start a new blackjack game with a bet of ${betAmount} wei.`;
+      } else if (action === "hit") {
+        message = "Hit - draw another card.";
+      } else if (action === "stand") {
+        message = "Stand - end your turn and let dealer play.";
+      }
+
+      console.log(`\n🤖 Calling AI agent: ${message}`);
+
+      const response = await fetch("http://localhost:3000/api/agent", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ userMessage: message }),
+      });
+
+      if (!response.ok) {
+        throw new Error(`Agent API failed: ${response.status}`);
+      }
+
+      const data = await response.json();
+      console.log(`✅ ${action.toUpperCase()} action executed`);
+      console.log(`🤖 Agent response: ${data.response?.substring(0, 200) || "No response"}`);
+    } catch (error) {
+      console.error(`❌ Failed to execute ${action}:`, error);
+      throw error;
+    }
+  }
+
+  /**
+   * Sleep utility
+   */
+  private sleep(ms: number): Promise<void> {
+    return new Promise((resolve) => setTimeout(resolve, ms));
+  }
+
+  /**
+   * Get current state
+   */
+  getState(): GameLoopState {
+    return this.state;
+  }
+
+  /**
+   * Get statistics
+   */
+  getStats(): GameStats {
+    return { ...this.stats };
+  }
+
+  /**
+   * Get current game ID
+   */
+  getCurrentGameId(): bigint | null {
+    return this.currentGameId;
+  }
+
+  /**
+   * Get last game result
+   */
+  getLastResult(): GameResult | null {
+    return this.lastGameResult;
+  }
+}
