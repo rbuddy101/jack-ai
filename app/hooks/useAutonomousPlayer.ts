@@ -46,6 +46,7 @@ interface UseAutonomousPlayerResult {
   lastGameResult: LastGameResult | null;
   isLoading: boolean;
   error: string | null;
+  walletInfo: { address: string; balance: number } | null;
   startPlay: () => Promise<void>;
   stopPlay: () => Promise<void>;
   startSimulatedPlay: () => void;
@@ -58,6 +59,7 @@ export function useAutonomousPlayer(): UseAutonomousPlayerResult {
   const [lastGameResult, setLastGameResult] = useState<LastGameResult | null>(null);
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [walletInfo, setWalletInfo] = useState<{ address: string; balance: number } | null>(null);
   const eventSourceRef = useRef<EventSource | null>(null);
   const simulationTimeoutRef = useRef<NodeJS.Timeout | null>(null);
 
@@ -108,17 +110,17 @@ export function useAutonomousPlayer(): UseAutonomousPlayerResult {
     // Initial state
     setStatus({
       isRunning: true,
-      currentState: "CHECKING_CLAIMABLE",
+      currentState: GameLoopState.CHECKING_CLAIMABLE,
       stats: status?.stats || {
-        totalGames: 0,
+        gamesPlayed: 0,
         wins: 0,
         losses: 0,
         pushes: 0,
         busts: 0,
-        blackjacks: 0,
+        winRate: 0,
         currentStreak: 0,
-        bestWinStreak: 0,
-        worstLossStreak: 0,
+        longestWinStreak: 0,
+        longestLossStreak: 0,
       },
       currentGameId: BigInt(Date.now()),
       error: null,
@@ -126,30 +128,33 @@ export function useAutonomousPlayer(): UseAutonomousPlayerResult {
 
     setEvents([{
       type: "state_change",
+      state: GameLoopState.CHECKING_CLAIMABLE,
       timestamp: Date.now(),
-      data: { state: "CHECKING_CLAIMABLE", message: "Checking for claimable winnings..." }
+      data: { message: "Checking for claimable winnings..." }
     }]);
 
     let timeElapsed = 0;
 
     // Step 1: Starting game (3s)
     setTimeout(() => {
-      setStatus(prev => prev ? { ...prev, currentState: "STARTING_GAME" } : prev);
+      setStatus(prev => prev ? { ...prev, currentState: GameLoopState.STARTING_GAME } : prev);
       setEvents(prev => [...prev, {
         type: "state_change",
+        state: GameLoopState.STARTING_GAME,
         timestamp: Date.now(),
-        data: { from: "CHECKING_CLAIMABLE", to: "STARTING_GAME", message: "Starting new game..." }
+        data: { from: GameLoopState.CHECKING_CLAIMABLE, to: GameLoopState.STARTING_GAME, message: "Starting new game..." }
       }]);
     }, 3000);
     timeElapsed += 3000;
 
     // Step 2: Waiting for initial deal (8s)
     setTimeout(() => {
-      setStatus(prev => prev ? { ...prev, currentState: "WAITING_INITIAL_DEAL" } : prev);
+      setStatus(prev => prev ? { ...prev, currentState: GameLoopState.WAITING_INITIAL_DEAL } : prev);
       setEvents(prev => [...prev, {
         type: "state_change",
+        state: GameLoopState.WAITING_INITIAL_DEAL,
         timestamp: Date.now(),
-        data: { from: "STARTING_GAME", to: "WAITING_INITIAL_DEAL", message: "Waiting for VRF callback for initial deal..." }
+        data: { from: GameLoopState.STARTING_GAME, to: GameLoopState.WAITING_INITIAL_DEAL, message: "Waiting for VRF callback for initial deal..." }
       }]);
     }, timeElapsed);
     timeElapsed += 8000;
@@ -168,10 +173,11 @@ export function useAutonomousPlayer(): UseAutonomousPlayerResult {
         dealerTotal,
       });
 
-      setStatus(prev => prev ? { ...prev, currentState: "WAITING_TRADING_PERIOD" } : prev);
-      
+      setStatus(prev => prev ? { ...prev, currentState: GameLoopState.WAITING_TRADING_PERIOD } : prev);
+
       setEvents(prev => [...prev, {
         type: "initial_deal",
+        state: GameLoopState.WAITING_TRADING_PERIOD,
         timestamp: Date.now(),
         data: {
           playerCards,
@@ -186,11 +192,12 @@ export function useAutonomousPlayer(): UseAutonomousPlayerResult {
 
     // Step 4: Playing - AI Decision
     setTimeout(() => {
-      setStatus(prev => prev ? { ...prev, currentState: "PLAYING" } : prev);
+      setStatus(prev => prev ? { ...prev, currentState: GameLoopState.PLAYING } : prev);
       setEvents(prev => [...prev, {
-        type: "state_change",
-        timestamp: Date.now(),
-        data: { from: "WAITING_TRADING_PERIOD", to: "PLAYING", message: "Trading period ended. Making decision..." }
+      type: "state_change",
+      state: GameLoopState.PLAYING, // TEMP - will be replaced
+      timestamp: Date.now(),
+        data: { from: GameLoopState.WAITING_TRADING_PERIOD, to: GameLoopState.PLAYING, message: "Trading period ended. Making decision..." }
       }]);
     }, timeElapsed);
     timeElapsed += 2000;
@@ -202,8 +209,9 @@ export function useAutonomousPlayer(): UseAutonomousPlayerResult {
       const shouldHit = currentPlayerTotal < 17;
 
       setEvents(prev => [...prev, {
-        type: "decision",
-        timestamp: Date.now(),
+      type: "decision",
+      state: GameLoopState.PLAYING, // TEMP - will be replaced
+      timestamp: Date.now(),
         data: {
           action: shouldHit ? "hit" : "stand",
           playerTotal: currentPlayerTotal,
@@ -217,7 +225,7 @@ export function useAutonomousPlayer(): UseAutonomousPlayerResult {
     // Step 6: Execute action (hit or stand)
     setTimeout(() => {
       const shouldHit = currentCards && currentCards.playerTotal < 17;
-      const newState = shouldHit ? "WAITING_HIT_VRF" : "WAITING_STAND_VRF";
+      const newState = shouldHit ? GameLoopState.WAITING_HIT_VRF : GameLoopState.WAITING_STAND_VRF;
 
       setStatus(prev => prev ? {
         ...prev,
@@ -225,10 +233,11 @@ export function useAutonomousPlayer(): UseAutonomousPlayerResult {
       } : prev);
 
       setEvents(prev => [...prev, {
-        type: "state_change",
-        timestamp: Date.now(),
+      type: "state_change",
+      state: newState,
+      timestamp: Date.now(),
         data: {
-          from: "PLAYING",
+          from: GameLoopState.PLAYING,
           to: newState,
           message: `Waiting for VRF callback for ${shouldHit ? "hit" : "stand"}...`
         }
@@ -252,8 +261,9 @@ export function useAutonomousPlayer(): UseAutonomousPlayerResult {
         });
 
         setEvents(prev => [...prev, {
-          type: "decision",
-          timestamp: Date.now(),
+      type: "decision",
+      state: GameLoopState.PLAYING, // TEMP - will be replaced
+      timestamp: Date.now(),
           data: {
             action: "card_drawn",
             playerTotal: updatedPlayerTotal,
@@ -266,11 +276,12 @@ export function useAutonomousPlayer(): UseAutonomousPlayerResult {
         setTimeout(() => {
           const shouldHitAgain = updatedPlayerTotal < 17 && updatedPlayerTotal <= 21;
 
-          setStatus(prev => prev ? { ...prev, currentState: "PLAYING" } : prev);
+          setStatus(prev => prev ? { ...prev, currentState: GameLoopState.PLAYING } : prev);
 
           setEvents(prev => [...prev, {
-            type: "decision",
-            timestamp: Date.now(),
+      type: "decision",
+      state: GameLoopState.PLAYING, // TEMP - will be replaced
+      timestamp: Date.now(),
             data: {
               action: shouldHitAgain ? "hit" : "stand",
               playerTotal: updatedPlayerTotal,
@@ -281,13 +292,14 @@ export function useAutonomousPlayer(): UseAutonomousPlayerResult {
 
           // Final stand state
           setTimeout(() => {
-            setStatus(prev => prev ? { ...prev, currentState: "WAITING_STAND_VRF" } : prev);
+            setStatus(prev => prev ? { ...prev, currentState: GameLoopState.WAITING_STAND_VRF } : prev);
             setEvents(prev => [...prev, {
-              type: "state_change",
-              timestamp: Date.now(),
+      type: "state_change",
+      state: GameLoopState.WAITING_STAND_VRF,
+      timestamp: Date.now(),
               data: {
-                from: "PLAYING",
-                to: "WAITING_STAND_VRF",
+                from: GameLoopState.PLAYING,
+                to: GameLoopState.WAITING_STAND_VRF,
                 message: "Waiting for VRF callback for stand..."
               }
             }]);
@@ -295,10 +307,10 @@ export function useAutonomousPlayer(): UseAutonomousPlayerResult {
         }, 3000);
       }
     }, timeElapsed);
-    timeElapsed += shouldHit ? 8000 : 5000; // More time if we hit
 
     // Adjust for second decision if we hit
     const shouldHit = currentCards && currentCards.playerTotal < 17;
+    timeElapsed += shouldHit ? 8000 : 5000; // More time if we hit
     if (shouldHit) {
       timeElapsed += 5000; // Additional time for second decision
     }
@@ -337,25 +349,28 @@ export function useAutonomousPlayer(): UseAutonomousPlayerResult {
           if (!prev) return prev;
 
           const newStats = { ...prev.stats };
-          newStats.totalGames++;
+          newStats.gamesPlayed++;
 
           if (result === "WIN") {
             newStats.wins++;
             newStats.currentStreak = Math.max(0, newStats.currentStreak) + 1;
-            newStats.bestWinStreak = Math.max(newStats.bestWinStreak, newStats.currentStreak);
+            newStats.longestWinStreak = Math.max(newStats.longestWinStreak, newStats.currentStreak);
           } else if (result === "LOSS") {
             newStats.losses++;
             if (playerTotal > 21) newStats.busts++;
             newStats.currentStreak = Math.min(0, newStats.currentStreak) - 1;
-            newStats.worstLossStreak = Math.min(newStats.worstLossStreak, newStats.currentStreak);
+            newStats.longestLossStreak = Math.min(newStats.longestLossStreak, newStats.currentStreak);
           } else {
             newStats.pushes++;
             newStats.currentStreak = 0;
           }
 
+          // Calculate win rate
+          newStats.winRate = newStats.gamesPlayed > 0 ? newStats.wins / newStats.gamesPlayed : 0;
+
           return {
             ...prev,
-            currentState: "GAME_COMPLETE",
+            currentState: GameLoopState.GAME_COMPLETE,
             stats: newStats,
           };
         });
@@ -372,8 +387,9 @@ export function useAutonomousPlayer(): UseAutonomousPlayerResult {
 
         // Add completion event
         setEvents(prev => [...prev, {
-          type: "game_complete",
-          timestamp: Date.now(),
+      type: "game_complete",
+      state: GameLoopState.GAME_COMPLETE,
+      timestamp: Date.now(),
           data: {
             result,
             status: gameStatus,
@@ -393,11 +409,12 @@ export function useAutonomousPlayer(): UseAutonomousPlayerResult {
 
     // Step 7: Return to idle
     simulationTimeoutRef.current = setTimeout(() => {
-      setStatus(prev => prev ? { ...prev, currentState: "IDLE", isRunning: false } : prev);
+      setStatus(prev => prev ? { ...prev, currentState: GameLoopState.IDLE, isRunning: false } : prev);
       setEvents(prev => [...prev, {
-        type: "state_change",
-        timestamp: Date.now(),
-        data: { state: "IDLE", message: "Simulation complete!" }
+      type: "state_change",
+      state: GameLoopState.IDLE,
+      timestamp: Date.now(),
+        data: { message: "Simulation complete!" }
       }]);
 
       console.log("✅ Simulated play complete");
@@ -482,7 +499,7 @@ export function useAutonomousPlayer(): UseAutonomousPlayerResult {
         // Update status with stats
         setStatus(prev => prev ? { ...prev, stats: data.stats } : {
           isRunning: false,
-          currentState: "IDLE" as GameLoopState,
+          currentState: GameLoopState.IDLE,
           stats: data.stats,
           currentGameId: null,
           error: null,
@@ -508,6 +525,27 @@ export function useAutonomousPlayer(): UseAutonomousPlayerResult {
     } catch (error) {
       console.error("Failed to fetch status:", error);
       setError(error instanceof Error ? error.message : "Unknown error");
+    }
+  }, []);
+
+  /**
+   * Fetch wallet info
+   */
+  const fetchWalletInfo = useCallback(async () => {
+    try {
+      const response = await fetch("/api/wallet");
+      if (!response.ok) {
+        throw new Error(`HTTP ${response.status}`);
+      }
+      const data = await response.json();
+      if (data.success) {
+        setWalletInfo({
+          address: data.address,
+          balance: data.balance,
+        });
+      }
+    } catch (error) {
+      console.error("Failed to fetch wallet info:", error);
     }
   }, []);
 
@@ -575,6 +613,8 @@ export function useAutonomousPlayer(): UseAutonomousPlayerResult {
   useEffect(() => {
     // Fetch stats immediately from blockchain
     fetchStats();
+    // Fetch wallet info
+    fetchWalletInfo();
     // Connect to SSE stream for real-time updates (will send status)
     connectToStream();
 
@@ -584,7 +624,7 @@ export function useAutonomousPlayer(): UseAutonomousPlayerResult {
         eventSourceRef.current = null;
       }
     };
-  }, [fetchStats, connectToStream]);
+  }, [fetchStats, fetchWalletInfo, connectToStream]);
 
   return {
     status,
@@ -593,6 +633,7 @@ export function useAutonomousPlayer(): UseAutonomousPlayerResult {
     lastGameResult,
     isLoading,
     error,
+    walletInfo,
     startPlay,
     stopPlay,
     startSimulatedPlay,

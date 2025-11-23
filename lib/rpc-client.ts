@@ -314,6 +314,19 @@ export class BlackjackRPCClient {
       statusLower.includes("game over")
     );
   }
+
+  /**
+   * Get wallet ETH balance
+   */
+  async getBalance(): Promise<bigint> {
+    try {
+      const balance = await this.walletProvider.getBalance();
+      return balance;
+    } catch (error) {
+      console.error("❌ Failed to get balance:", error);
+      throw error;
+    }
+  }
 }
 
 // NOTE: createRPCClient() moved to rpc-client-factory.ts

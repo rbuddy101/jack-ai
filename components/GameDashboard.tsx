@@ -13,7 +13,7 @@ import { ActionLog } from "./ActionLog";
 import { CardDisplay } from "./CardDisplay";
 
 export function GameDashboard() {
-  const { status, events, currentCards, lastGameResult, isLoading, error, startPlay, stopPlay, startSimulatedPlay } = useAutonomousPlayer();
+  const { status, events, currentCards, lastGameResult, isLoading, error, walletInfo, startPlay, stopPlay, startSimulatedPlay } = useAutonomousPlayer();
 
   const betAmount = process.env.NEXT_PUBLIC_BET_AMOUNT || "0.0007";
 
@@ -42,6 +42,17 @@ export function GameDashboard() {
               <p className="text-gray-400 text-sm">
                 Bet Amount: {betAmount} ETH per game
               </p>
+              {walletInfo && (
+                <>
+                  <p className="text-gray-400 text-sm mt-1">
+                    AI Wallet: <span className="font-mono text-xs">{walletInfo.address}</span>
+                  </p>
+                  <p className={`text-sm mt-1 font-semibold ${walletInfo.balance >= 0.0007 ? 'text-green-400' : 'text-yellow-400'}`}>
+                    Balance: {walletInfo.balance.toFixed(6)} ETH
+                    {walletInfo.balance < 0.0007 && ' ⚠️ Low Balance'}
+                  </p>
+                </>
+              )}
               {status?.isRunning && (
                 <p className="text-green-400 text-sm mt-1">● Running</p>
               )}
