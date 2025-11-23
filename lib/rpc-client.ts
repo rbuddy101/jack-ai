@@ -231,7 +231,8 @@ export class BlackjackRPCClient {
    */
   async pollForStateChange(
     initialState: HandState,
-    maxWaitTime: number = 300000 // 5 minutes
+    maxWaitTime: number = 300000, // 5 minutes
+    shouldStop: () => boolean = () => false
   ): Promise<GameDisplay> {
     const startTime = Date.now();
     const pollInterval = 2000; // 2 seconds
@@ -240,6 +241,13 @@ export class BlackjackRPCClient {
     console.log(`\n🔄 Polling for state change from ${HandState[initialState]}...`);
 
     while (Date.now() - startTime < maxWaitTime) {
+      // Check if we should stop
+      if (shouldStop()) {
+        console.log("🛑 [POLL] Polling stopped by user request");
+        console.log("🛑 [POLL] Throwing 'Stopped by user' error");
+        throw new Error("Stopped by user");
+      }
+
       pollCount++;
       const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
 
@@ -271,10 +279,17 @@ export class BlackjackRPCClient {
   /**
    * Poll until trading period ends (60 seconds after game start)
    */
-  async waitForTradingPeriod(): Promise<void> {
+  async waitForTradingPeriod(shouldStop: () => boolean = () => false): Promise<void> {
     console.log("\n⏳ Waiting for trading period to end...");
 
     while (true) {
+      // Check if we should stop
+      if (shouldStop()) {
+        console.log("🛑 [TRADING] Trading period wait stopped by user request");
+        console.log("🛑 [TRADING] Throwing 'Stopped by user' error");
+        throw new Error("Stopped by user");
+      }
+
       const gameStatus = await this.getGameStatus();
       const secondsLeft = Number(gameStatus.secondsUntilCanAct);
 

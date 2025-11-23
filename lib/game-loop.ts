@@ -72,10 +72,16 @@ export class GameLoop extends EventEmitter {
   private currentGameId: bigint | null = null;
   private stats: GameStats;
   private lastGameResult: GameResult | null = null;
+  private shouldStop: () => boolean;
 
-  private constructor(rpcClient: BlackjackRPCClient, initialStats?: Partial<GameStats>) {
+  private constructor(
+    rpcClient: BlackjackRPCClient, 
+    shouldStop: () => boolean,
+    initialStats?: Partial<GameStats>
+  ) {
     super(); // Call EventEmitter constructor
     this.rpcClient = rpcClient;
+    this.shouldStop = shouldStop;
     this.stats = {
       gamesPlayed: initialStats?.gamesPlayed || 0,
       wins: initialStats?.wins || 0,
@@ -92,7 +98,10 @@ export class GameLoop extends EventEmitter {
   /**
    * Create a new GameLoop instance with historical stats from contract
    */
-  static async create(rpcClient: BlackjackRPCClient): Promise<GameLoop> {
+  static async create(
+    rpcClient: BlackjackRPCClient,
+    shouldStop: () => boolean = () => false
+  ): Promise<GameLoop> {
     try {
       console.log("📊 Loading historical stats from contract...");
       const contractStats = await rpcClient.getPlayerStats();
@@ -106,7 +115,7 @@ export class GameLoop extends EventEmitter {
         winRate: contractStats.winRate,
       });
 
-      return new GameLoop(rpcClient, {
+      return new GameLoop(rpcClient, shouldStop, {
         gamesPlayed: Number(contractStats.gamesPlayed),
         wins: Number(contractStats.gamesWon),
         losses: Number(contractStats.gamesLost),
@@ -119,7 +128,7 @@ export class GameLoop extends EventEmitter {
       });
     } catch (error) {
       console.warn("⚠️ Failed to load historical stats, starting fresh:", error);
-      return new GameLoop(rpcClient);
+      return new GameLoop(rpcClient, shouldStop);
     }
   }
 
@@ -160,7 +169,11 @@ export class GameLoop extends EventEmitter {
 
     // Wait for initial deal
     this.setState(GameLoopState.WAITING_INITIAL_DEAL);
-    const afterDeal = await this.rpcClient.pollForStateChange(HandState.PendingInitialDeal);
+    const afterDeal = await this.rpcClient.pollForStateChange(
+      HandState.PendingInitialDeal,
+      300000,
+      this.shouldStop
+    );
     this.currentGameId = afterDeal.gameId;
     
     this.emit("initial_deal", {
@@ -193,7 +206,7 @@ export class GameLoop extends EventEmitter {
 
     // Wait for trading period to end
     this.setState(GameLoopState.WAITING_TRADING_PERIOD);
-    await this.rpcClient.waitForTradingPeriod();
+    await this.rpcClient.waitForTradingPeriod(this.shouldStop);
     
     // Now play the hand
     await this.playHand();
@@ -274,6 +287,12 @@ export class GameLoop extends EventEmitter {
   async runGameCycle(): Promise<void> {
     this.updateState(GameLoopState.CHECKING_CLAIMABLE);
 
+    // Check if we should stop at the very beginning
+    if (this.shouldStop()) {
+      console.log("🛑 [CYCLE] Game cycle stopped by user request (entry point)");
+      throw new Error("Stopped by user");
+    }
+
     console.log("🔍 Checking for existing active game...");
     
     // Get current game state
@@ -326,7 +345,7 @@ export class GameLoop extends EventEmitter {
       // Check if trading period is active
       if (currentStatus.secondsUntilCanAct > 0n) {
         console.log(`⏳ Trading period active, waiting ${currentStatus.secondsUntilCanAct}s...`);
-        await this.rpcClient.waitForTradingPeriod();
+        await this.rpcClient.waitForTradingPeriod(this.shouldStop);
       }
       
       // Play the active game
@@ -355,6 +374,12 @@ export class GameLoop extends EventEmitter {
     this.setState(GameLoopState.PLAYING);
 
     while (true) {
+      // Check if we should stop before each iteration
+      if (this.shouldStop()) {
+        console.log("🛑 [PLAYHAND] Play hand stopped by user request (loop start)");
+        throw new Error("Stopped by user");
+      }
+
       const gameStatus = await this.rpcClient.getGameStatus();
 
       console.log(`\n📊 GAME STATUS DEBUG:`);
@@ -386,6 +411,12 @@ export class GameLoop extends EventEmitter {
         continue;
       }
 
+      // Check again before making decision (AI call can take time)
+      if (this.shouldStop()) {
+        console.log("🛑 [PLAYHAND] Play hand stopped before decision (pre-AI call)");
+        throw new Error("Stopped by user");
+      }
+
       // Make decision via API call (server-side AI)
       const decision = await this.getDecision(
         gameStatus.playerTotal,
@@ -400,15 +431,21 @@ export class GameLoop extends EventEmitter {
         dealerTotal: gameStatus.dealerTotal,
       });
 
+      // Check once more before executing action
+      if (this.shouldStop()) {
+        console.log("🛑 [PLAYHAND] Play hand stopped before action execution (pre-blockchain)");
+        throw new Error("Stopped by user");
+      }
+
       // Execute decision via API
       if (decision === "hit") {
         await this.executeAction("hit");
         this.setState(GameLoopState.WAITING_HIT_VRF);
-        await this.rpcClient.pollForStateChange(HandState.PendingHit);
+        await this.rpcClient.pollForStateChange(HandState.PendingHit, 300000, this.shouldStop);
       } else {
         await this.executeAction("stand");
         this.setState(GameLoopState.WAITING_STAND_VRF);
-        await this.rpcClient.pollForStateChange(HandState.PendingStand);
+        await this.rpcClient.pollForStateChange(HandState.PendingStand, 300000, this.shouldStop);
         break; // Stand ends the hand
       }
 
@@ -446,40 +483,72 @@ export class GameLoop extends EventEmitter {
 
       console.log(`\n🤖 Calling AI agent: ${message}`);
 
-      // Use relative URL to work with any port
-      const apiUrl = typeof window !== 'undefined'
-        ? '/api/agent'
-        : `http://localhost:${process.env.PORT || 3000}/api/agent`;
-
-      const response = await fetch(apiUrl, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ userMessage: message }),
-      });
-
-      if (!response.ok) {
-        throw new Error(`Agent API failed: ${response.status}`);
+      // Check if we should stop before making the request
+      if (this.shouldStop()) {
+        console.log("🛑 [ACTION] Action cancelled before execution (pre-fetch)");
+        throw new Error("Stopped by user");
       }
 
-      const data = await response.json();
-      const agentResponse = data.response || "";
+      // Create AbortController with timeout
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 60000); // 60s timeout
 
-      // Check if the response indicates an error
-      const errorKeywords = ["error", "failed", "reverted", "insufficient", "check your balance", "try again later", "needs more eth", "needs eth"];
-      const hasError = errorKeywords.some(keyword =>
-        agentResponse.toLowerCase().includes(keyword)
-      );
+      // Poll shouldStop during the request
+      const stopCheckInterval = setInterval(() => {
+        if (this.shouldStop()) {
+          console.log("🛑 [ACTION] Aborting action request due to stop (during fetch)");
+          controller.abort();
+        }
+      }, 500); // Check every 500ms
 
-      if (hasError) {
-        console.log(`❌ ${action.toUpperCase()} action failed`);
+      try {
+        // Use relative URL to work with any port
+        const apiUrl = typeof window !== 'undefined'
+          ? '/api/agent'
+          : `http://localhost:${process.env.PORT || 3000}/api/agent`;
+
+        const response = await fetch(apiUrl, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ userMessage: message }),
+          signal: controller.signal,
+        });
+
+        clearTimeout(timeoutId);
+        clearInterval(stopCheckInterval);
+
+        if (!response.ok) {
+          throw new Error(`Agent API failed: ${response.status}`);
+        }
+
+        const data = await response.json();
+        const agentResponse = data.response || "";
+
+        // Check if the response indicates an error
+        const errorKeywords = ["error", "failed", "reverted", "insufficient", "check your balance", "try again later", "needs more eth", "needs eth"];
+        const hasError = errorKeywords.some(keyword =>
+          agentResponse.toLowerCase().includes(keyword)
+        );
+
+        if (hasError) {
+          console.log(`❌ ${action.toUpperCase()} action failed`);
+          console.log(`🤖 Agent response: ${agentResponse.substring(0, 200)}`);
+          return false;
+        }
+
+        console.log(`✅ ${action.toUpperCase()} action executed`);
         console.log(`🤖 Agent response: ${agentResponse.substring(0, 200)}`);
-        return false;
+        return true;
+      } finally {
+        clearTimeout(timeoutId);
+        clearInterval(stopCheckInterval);
       }
-
-      console.log(`✅ ${action.toUpperCase()} action executed`);
-      console.log(`🤖 Agent response: ${agentResponse.substring(0, 200)}`);
-      return true;
     } catch (error) {
+      // Check if this was an abort due to stop
+      if (error instanceof Error && error.name === 'AbortError') {
+        console.log("🛑 Action request aborted");
+        throw new Error("Stopped by user");
+      }
       console.error(`❌ Failed to execute ${action}:`, error);
       return false;
     }

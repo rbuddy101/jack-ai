@@ -20,6 +20,16 @@ import { CdpSmartWalletProvider } from "@coinbase/agentkit";
 import { BlackjackRPCClient } from "@/lib/rpc-client";
 
 /**
+ * Helper to serialize BigInt values for JSON
+ */
+function serializeBigInt(key: string, value: any): any {
+  if (typeof value === 'bigint') {
+    return value.toString();
+  }
+  return value;
+}
+
+/**
  * Fetch real stats from blockchain
  */
 async function fetchRealStats() {
@@ -80,7 +90,7 @@ export async function GET() {
       const initMessage = `data: ${JSON.stringify({
         type: "connected",
         timestamp: Date.now(),
-      })}\n\n`;
+      }, serializeBigInt)}\n\n`;
       safeEnqueue(initMessage);
 
       // Send initial status immediately on connection
@@ -101,7 +111,7 @@ export async function GET() {
             type: "status_update",
             data: serializableStatus,
             timestamp: Date.now(),
-          })}\n\n`;
+          }, serializeBigInt)}\n\n`;
           safeEnqueue(message);
         } catch (error) {
           console.error("Initial status fetch error:", error);
@@ -110,7 +120,7 @@ export async function GET() {
 
       // Event listener for game events
       const eventListener = (event: GameLoopEvent) => {
-        const message = `data: ${JSON.stringify(event)}\n\n`;
+        const message = `data: ${JSON.stringify(event, serializeBigInt)}\n\n`;
         safeEnqueue(message);
       };
 
@@ -140,7 +150,7 @@ export async function GET() {
             type: "status_update",
             data: serializableStatus,
             timestamp: Date.now(),
-          })}\n\n`;
+          }, serializeBigInt)}\n\n`;
           safeEnqueue(message);
         } catch (error) {
           console.error("Status update error:", error);

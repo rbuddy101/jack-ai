@@ -45,6 +45,9 @@ interface UseAutonomousPlayerResult {
   currentCards: CurrentCards | null;
   lastGameResult: LastGameResult | null;
   isLoading: boolean;
+  isStarting: boolean;
+  isStopping: boolean;
+  isSelling: boolean;
   error: string | null;
   walletInfo: { address: string; balance: number; wAssBalance: number } | null;
   startPlay: () => Promise<void>;
@@ -58,7 +61,8 @@ export function useAutonomousPlayer(): UseAutonomousPlayerResult {
   const [events, setEvents] = useState<GameLoopEvent[]>([]);
   const [currentCards, setCurrentCards] = useState<CurrentCards | null>(null);
   const [lastGameResult, setLastGameResult] = useState<LastGameResult | null>(null);
-  const [isLoading, setIsLoading] = useState(false);
+  const [isStarting, setIsStarting] = useState(false);
+  const [isStopping, setIsStopping] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [walletInfo, setWalletInfo] = useState<{ address: string; balance: number; wAssBalance: number } | null>(null);
   const [isSelling, setIsSelling] = useState(false);
@@ -524,9 +528,21 @@ export function useAutonomousPlayer(): UseAutonomousPlayerResult {
       }
       const data = await response.json();
       setStatus(data);
+      
+      // Reset loading states when we get fresh status
+      setIsStarting(false);
+      setIsStopping(false);
+      
+      return data;
     } catch (error) {
       console.error("Failed to fetch status:", error);
       setError(error instanceof Error ? error.message : "Unknown error");
+      
+      // Reset loading states on error too
+      setIsStarting(false);
+      setIsStopping(false);
+      
+      return null;
     }
   }, []);
 
@@ -590,7 +606,7 @@ export function useAutonomousPlayer(): UseAutonomousPlayerResult {
    * Start autonomous play
    */
   const startPlay = useCallback(async () => {
-    setIsLoading(true);
+    setIsStarting(true);
     setError(null);
 
     try {
@@ -611,7 +627,7 @@ export function useAutonomousPlayer(): UseAutonomousPlayerResult {
       console.error("Failed to start:", error);
       setError(error instanceof Error ? error.message : "Unknown error");
     } finally {
-      setIsLoading(false);
+      setIsStarting(false);
     }
   }, [fetchStatus]);
 
@@ -619,7 +635,7 @@ export function useAutonomousPlayer(): UseAutonomousPlayerResult {
    * Stop autonomous play
    */
   const stopPlay = useCallback(async () => {
-    setIsLoading(true);
+    setIsStopping(true);
     setError(null);
 
     try {
@@ -640,7 +656,7 @@ export function useAutonomousPlayer(): UseAutonomousPlayerResult {
       console.error("Failed to stop:", error);
       setError(error instanceof Error ? error.message : "Unknown error");
     } finally {
-      setIsLoading(false);
+      setIsStopping(false);
     }
   }, [fetchStatus]);
 
@@ -648,6 +664,20 @@ export function useAutonomousPlayer(): UseAutonomousPlayerResult {
    * Initialize on mount
    */
   useEffect(() => {
+    // Reset all loading states on mount
+    setIsStarting(false);
+    setIsStopping(false);
+    setIsSelling(false);
+    
+    // Check for existing running process on page load
+    fetchStatus().then((currentStatus) => {
+      if (currentStatus?.isRunning) {
+        console.log("♻️ Reconnecting to running autonomous play...");
+      } else {
+        console.log("✅ No autonomous play currently running");
+      }
+    });
+
     // Fetch stats immediately from blockchain
     fetchStats();
     // Fetch wallet info
@@ -661,14 +691,17 @@ export function useAutonomousPlayer(): UseAutonomousPlayerResult {
         eventSourceRef.current = null;
       }
     };
-  }, [fetchStats, fetchWalletInfo, connectToStream]);
+  }, [fetchStats, fetchWalletInfo, connectToStream, fetchStatus]);
 
   return {
     status,
     events,
     currentCards,
     lastGameResult,
-    isLoading: isLoading || isSelling,
+    isLoading: isStarting || isStopping || isSelling,
+    isStarting,
+    isStopping,
+    isSelling,
     error,
     walletInfo,
     startPlay,

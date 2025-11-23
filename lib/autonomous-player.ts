@@ -29,6 +29,17 @@ class AutonomousPlayerInstance {
   private eventListeners: Array<(event: GameLoopEvent) => void> = [];
 
   /**
+   * Check if the game should stop (called by GameLoop during long operations)
+   */
+  shouldStop(): boolean {
+    const shouldStopNow = !this.isRunning;
+    if (shouldStopNow) {
+      console.log("🛑 [STOP CHECK] shouldStop() returning TRUE - stop requested");
+    }
+    return shouldStopNow;
+  }
+
+  /**
    * Initialize the player
    */
   private async initialize(): Promise<void> {
@@ -43,8 +54,8 @@ class AutonomousPlayerInstance {
       this.rpcClient = await createRPCClient();
       console.log("✅ RPC Client initialized");
 
-      // Create game loop with historical stats from contract
-      this.gameLoop = await GameLoop.create(this.rpcClient);
+      // Create game loop with historical stats from contract and stop check
+      this.gameLoop = await GameLoop.create(this.rpcClient, () => this.shouldStop());
       console.log("✅ Game Loop initialized");
 
       // Forward events to listeners
@@ -87,7 +98,7 @@ class AutonomousPlayerInstance {
    */
   async start(): Promise<void> {
     if (this.isRunning) {
-      console.log("⚠️  Already running");
+      console.log("⚠️  Already running - reusing existing process");
       return;
     }
 
@@ -97,21 +108,48 @@ class AutonomousPlayerInstance {
     this.currentError = null;
     console.log("🎮 Starting autonomous play...");
 
-    // Run game loop continuously
-    this.runContinuousLoop();
+    // Run game loop (single game mode)
+    await this.runContinuousLoop();
   }
 
   /**
    * Stop autonomous play
    */
   stop(): void {
+    console.log("🛑 [STOP] Stop method called");
+    console.log(`🛑 [STOP] Current isRunning state: ${this.isRunning}`);
+    
     if (!this.isRunning) {
-      console.log("⚠️  Not running");
+      console.log("⚠️  [STOP] Not running - nothing to stop");
       return;
     }
 
+    console.log("🛑 [STOP] Setting isRunning to FALSE");
     this.isRunning = false;
-    console.log("🛑 Stopping autonomous play...");
+    console.log("🛑 [STOP] Stop flag set - game loop should terminate within 2 seconds");
+    
+    // Clean up resources
+    this.cleanup();
+  }
+
+  /**
+   * Clean up resources
+   */
+  private cleanup(): void {
+    console.log("🧹 Cleaning up resources...");
+    
+    // Remove all event listeners from game loop
+    if (this.gameLoop) {
+      this.gameLoop.removeAllListeners();
+    }
+    
+    // Clear our event listener array
+    this.eventListeners = [];
+    
+    // Clear error state
+    this.currentError = null;
+    
+    console.log("✅ Cleanup complete");
   }
 
   /**
@@ -120,45 +158,59 @@ class AutonomousPlayerInstance {
   private async runContinuousLoop(): Promise<void> {
     try {
       console.log("\n" + "=".repeat(60));
-      console.log("🎲 STARTING CONTINUOUS AUTONOMOUS PLAY");
+      console.log("🎲 STARTING SINGLE GAME");
       console.log("=".repeat(60) + "\n");
 
-      // Continuously run game cycles until stopped
-      while (this.isRunning) {
-        console.log("\n" + "=".repeat(60));
-        console.log("🔄 STARTING NEW GAME CYCLE");
-        console.log("=".repeat(60) + "\n");
+      // Run ONE game cycle then stop
+      await this.gameLoop!.runGameCycle();
 
-        await this.gameLoop!.runGameCycle();
+      console.log("✅ Single game completed");
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : String(error);
 
-        // Small delay between games
-        if (this.isRunning) {
-          console.log("⏳ Waiting 3 seconds before next game...\n");
-          await new Promise(resolve => setTimeout(resolve, 3000));
-        }
+      // Check if this is a user-requested stop (not an actual error)
+      if (errorMessage === "Stopped by user") {
+        console.log("🛑 Stopped by user request");
+        // Don't set currentError for user-requested stops
+      } else {
+        console.error("❌ Error in game loop:", error);
+        this.currentError = errorMessage;
+
+        // Emit error event only for actual errors
+        this.eventListeners.forEach((listener) => {
+          listener({
+            type: "error",
+            state: this.gameLoop?.getState() || GameLoopState.ERROR,
+            data: { error: this.currentError },
+            timestamp: Date.now(),
+          });
+        });
+
+        console.log("🛑 Stopped due to error");
+      }
+    } finally {
+      // Only set isRunning to false if it wasn't already set by stop()
+      // This prevents race condition where finally runs before stop() is called
+      const wasRunning = this.isRunning;
+      if (wasRunning) {
+        console.log("✅ [FINALLY] Game completed, setting isRunning to false");
+        this.isRunning = false;
+      } else {
+        console.log("✅ [FINALLY] Already stopped (isRunning was already false)");
       }
 
-      console.log("✅ Continuous play stopped by user");
-    } catch (error) {
-      console.error("❌ Error in game loop:", error);
-      this.currentError = error instanceof Error ? error.message : String(error);
+      console.log("✅ Autonomous play stopped");
 
-      // Emit error event
+      // Emit final status update
       this.eventListeners.forEach((listener) => {
         listener({
-          type: "error",
-          state: this.gameLoop?.getState() || GameLoopState.ERROR,
-          data: { error: this.currentError },
+          type: "status_update",
+          state: this.gameLoop?.getState() || GameLoopState.IDLE,
+          data: { isRunning: false },
           timestamp: Date.now(),
         });
       });
-
-      // Stop on error
-      this.isRunning = false;
-      console.log("🛑 Stopped due to error");
     }
-
-    console.log("✅ Autonomous play stopped");
   }
 
   /**

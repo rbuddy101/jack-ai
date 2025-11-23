@@ -16,16 +16,22 @@ export async function POST(req: Request) {
     const { action } = body;
 
     if (action === "start") {
+      console.log("🎮 API: Starting autonomous play...");
       await autonomousPlayer.start();
+      const status = await autonomousPlayer.getStatus();
       return NextResponse.json({
         success: true,
         message: "Autonomous play started",
+        status,
       });
     } else if (action === "stop") {
+      console.log("🛑 API: Stopping autonomous play...");
       autonomousPlayer.stop();
+      const status = await autonomousPlayer.getStatus();
       return NextResponse.json({
         success: true,
-        message: "Autonomous play stopped",
+        message: "Autonomous play stopped and cleaned up",
+        status,
       });
     } else {
       return NextResponse.json(

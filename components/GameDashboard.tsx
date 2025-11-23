@@ -13,7 +13,7 @@ import { ActionLog } from "./ActionLog";
 import { CardDisplay } from "./CardDisplay";
 
 export function GameDashboard() {
-  const { status, events, currentCards, lastGameResult, isLoading, error, walletInfo, startPlay, stopPlay, startSimulatedPlay, sellWass } = useAutonomousPlayer();
+  const { status, events, currentCards, lastGameResult, isStarting, isStopping, isSelling, error, walletInfo, startPlay, stopPlay, startSimulatedPlay, sellWass } = useAutonomousPlayer();
 
   const betAmount = process.env.NEXT_PUBLIC_BET_AMOUNT || "0.0007";
 
@@ -67,18 +67,18 @@ export function GameDashboard() {
             <div className="flex gap-4">
               <button
                 onClick={startPlay}
-                disabled={isLoading || status?.isRunning}
+                disabled={isStarting || isStopping || status?.isRunning}
                 className="px-6 py-3 bg-green-600 hover:bg-green-700 disabled:bg-gray-600 disabled:cursor-not-allowed rounded-lg font-semibold transition-colors"
               >
-                {isLoading ? "Starting..." : "▶ Start Autonomous Play"}
+                {isStarting ? "Starting..." : "▶ Start Autonomous Play"}
               </button>
 
               <button
                 onClick={stopPlay}
-                disabled={isLoading || !status?.isRunning}
+                disabled={isStopping}
                 className="px-6 py-3 bg-red-600 hover:bg-red-700 disabled:bg-gray-600 disabled:cursor-not-allowed rounded-lg font-semibold transition-colors"
               >
-                {isLoading ? "Stopping..." : "■ Stop Play"}
+                {isStopping ? "Stopping..." : "■ Stop Play"}
               </button>
 
               <button
@@ -90,10 +90,10 @@ export function GameDashboard() {
                     alert(`Failed to sell wASS: ${err instanceof Error ? err.message : 'Unknown error'}`);
                   }
                 }}
-                disabled={isLoading || !walletInfo || walletInfo.wAssBalance <= 0}
+                disabled={isSelling || !walletInfo || walletInfo.wAssBalance <= 0}
                 className="px-6 py-3 bg-purple-600 hover:bg-purple-700 disabled:bg-gray-600 disabled:cursor-not-allowed rounded-lg font-semibold transition-colors"
               >
-                {isLoading ? "Selling..." : "💰 Sell wASS"}
+                {isSelling ? "Selling..." : "💰 Sell wASS"}
               </button>
             </div>
           </div>
