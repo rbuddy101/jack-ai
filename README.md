@@ -1,3 +1,5 @@
+# Made for an overnight hackathon for ETH Argentina 2025
+
 # 🃏 Autonomous AI Blackjack Agent
 
 An autonomous AI agent that plays blackjack on the Base blockchain, powered by [Coinbase AgentKit](https://github.com/coinbase/agentkit) and OpenAI. The agent makes strategic decisions, executes on-chain transactions, and automatically claims winnings—all while streaming real-time gameplay updates to a Next.js dashboard.
